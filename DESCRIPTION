@@ -1,0 +1,38 @@
+Package: ecem
+Title: Elicited Priors for Coarsening Regimes in Coarsened Exact Matching
+Version: 0.0.0.9000
+Authors@R: c(
+    person("Axel", "Dery", role = c("aut", "cre"), email = "you@example.com"),
+    person("Chris", "Alcantara", role = "aut"),
+    person("David A.", "Armstrong II", role = "aut"),
+    person("Laura", "Stephenson", role = "aut")
+    )
+Description: Implements the multiple-draw coarsened exact matching (CEM)
+    workflow developed in "Elicited Priors for Coarsening Regimes in
+    Coarsened Exact Matching." Coarsening cutpoints for each covariate can
+    be elicited (uncertain, drawn from a range), fixed, exact-matched,
+    excluded, or specified as a set of competing regimes (e.g. lifecycle
+    vs. generational theories of where a covariate should be coarsened).
+    Repeated draw-match-estimate cycles are pooled via Rubin's rules, with
+    diagnostics for whether that pooling is valid: a pre-matching flatness
+    screen, and a bootstrap excess-variance test computed directly on the
+    realized draws. When pooling is not valid, a Simonsohn-style existence
+    test is provided as a fallback. When the number of achievable
+    coarsenings is small enough, exact enumeration replaces Monte Carlo
+    draws outright, eliminating simulation error. Covariance-based
+    diagnostics let the analyst label the pooled estimate as an FSATT,
+    ATT, or ATE.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+Depends:
+    R (>= 3.6)
+Imports:
+    stats,
+    utils
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+URL: https://github.com/REPLACE-ME/ecem
+BugReports: https://github.com/REPLACE-ME/ecem/issues
+Config/roxygen2/version: 8.0.0
