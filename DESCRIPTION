@@ -15,8 +15,11 @@ Description: Implements the multiple-draw coarsened exact matching (CEM)
     vs. generational theories of where a covariate should be coarsened).
     Repeated draw-match-estimate cycles are pooled via Rubin's rules, with
     diagnostics for whether that pooling is valid: a pre-matching flatness
-    screen, and a bootstrap excess-variance test computed directly on the
-    realized draws. When pooling is not valid, a Simonsohn-style existence
+    screen, and a congeniality test run on a matched, common-support-
+    restricted, CEM-weighted fixed specification, using a
+    heteroskedasticity-robust Wald test rather than the earlier
+    resampling-based design this supersedes (see the accompanying paper's
+    appendix). When pooling is not valid, a Simonsohn-style existence
     test is provided as a fallback. When the number of achievable
     coarsenings is small enough, exact enumeration replaces Monte Carlo
     draws outright, eliminating simulation error. Covariance-based
@@ -28,11 +31,16 @@ Roxygen: list(markdown = TRUE)
 Depends:
     R (>= 3.6)
 Imports:
+    lmtest,
+    sandwich,
     stats,
     utils
 Suggests:
-    testthat (>= 3.0.0)
+    testthat (>= 3.0.0),
+    knitr,
+    rmarkdown
 Config/testthat/edition: 3
+VignetteBuilder: knitr
 URL: https://github.com/davidaarmstrong/ecem
 BugReports: https://github.com/davidaarmstrong/ecem/issues
 Config/roxygen2/version: 8.0.0

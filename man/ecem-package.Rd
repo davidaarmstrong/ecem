@@ -65,8 +65,8 @@ automatically.
 \seealso{
 Useful links:
 \itemize{
-  \item \url{https://github.com/REPLACE-ME/ecem}
-  \item Report bugs at \url{https://github.com/REPLACE-ME/ecem/issues}
+  \item \url{https://github.com/davidaarmstrong/ecem}
+  \item Report bugs at \url{https://github.com/davidaarmstrong/ecem/issues}
 }
 
 }

@@ -190,7 +190,23 @@ fit_effect <- function(data, treat_var, outcome_var, matched,
       if (length(covariates) > 0) paste("+", paste(covariates, collapse = " + ")) else ""
     ))
     reg_fit <- stats::lm(form, data = reg_data, weights = cw)
-    co <- summary(reg_fit)$coefficients
+    ## Only the Estimate/Std. Error columns are ever read below -- never
+    ## the F-statistic or R^2 that summary.lm()'s "essentially perfect fit:
+    ## summary may be unreliable" warning is actually about. That warning
+    ## fires whenever the residual sum of squares is tiny relative to the
+    ## fitted sum of squares, which a small or bootstrap-resampled matched
+    ## sample can trigger completely legitimately (e.g. a resample that
+    ## happens to duplicate rows within a stratum) without the coefficient
+    ## estimate or its SE being wrong. Muffle only this specific message so
+    ## any other warning summary() might throw still propagates normally.
+    co <- withCallingHandlers(
+      summary(reg_fit)$coefficients,
+      warning = function(w) {
+        if (grepl("essentially perfect fit", conditionMessage(w), fixed = TRUE)) {
+          invokeRestart("muffleWarning")
+        }
+      }
+    )
 
     if (treat_var %in% rownames(co) && is.finite(co[treat_var, "Estimate"])) {
       tau_hat <- unname(co[treat_var, "Estimate"])

@@ -65,6 +65,14 @@ median of the null distribution), and \code{B_null_dist} (the full vector
 of bootstrapped \verb{B*} values).
 }
 \description{
+\strong{Superseded by \code{\link[=congeniality_test]{congeniality_test()}}} -- kept here, off by default in
+\code{\link[=pooling_diagnostics]{pooling_diagnostics()}}, only for reproducing this earlier design or
+comparing against it directly; it is no longer part of the recommended
+workflow (see the paper's Appendix for why: CEM's discrete matching
+solution is destabilized by resampling with replacement, which made
+this test's power near zero regardless of true heterogeneity).
+}
+\details{
 Tests whether the observed between-draw variance \code{B} exceeds what
 sampling noise alone predicts, computed directly on the realized draws
 (as opposed to \code{\link[=flatness_test_XE]{flatness_test_XE()}}, which is a proxy computed on the

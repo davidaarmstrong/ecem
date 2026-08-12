@@ -49,7 +49,7 @@ returned by \code{\link[=elicit_and_match]{elicit_and_match()}}:
 \itemize{
 \item \code{"regression"} (the default): a weighted regression of \code{outcome_var}
 on \code{treat_var} plus \code{covariates}, using CEM's own control-weighting
-scheme (\code{\link[=cem_weights]{cem_weights()}}) on the retained sample -- the "run whatever
+scheme on the retained sample -- the "run whatever
 model you would have run anyway, on the matched data" approach the
 CEM literature itself recommends (Iacus, King & Porro 2011/2012,
 building on Ho, Imai, King & Stuart's (2007) matching-as-

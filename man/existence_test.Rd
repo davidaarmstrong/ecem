@@ -72,7 +72,7 @@ description of \code{stat_fun}, for printing), and \code{reused_bootstrap}
 (logical, whether \code{diagnostics}'s cached bootstrap was used).
 }
 \description{
-A fallback for when \code{\link[=excess_variance_test]{excess_variance_test()}} rejects and pooling via
+A fallback for when \code{\link[=congeniality_test]{congeniality_test()}} rejects and pooling via
 Rubin's rules is no longer trusted. For each draw \code{m} separately, forces
 that draw's \emph{own} null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}) --
 deliberately different from \code{\link[=excess_variance_test]{excess_variance_test()}}, which forces one
@@ -89,11 +89,10 @@ resampled outcome.
 override, or if \code{draws} doesn't carry them.
 
 If you already ran \code{\link[=pooling_diagnostics]{pooling_diagnostics()}} on this \code{draws} (e.g. because
-its excess-variance test rejected and this is the recommended fallback),
-pass that result as \code{diagnostics} to reuse its bootstrap instead of
-rerunning one from scratch -- \code{\link[=pooling_diagnostics]{pooling_diagnostics()}} and
-\code{\link[=excess_variance_test]{excess_variance_test()}} resample rows and rerun \code{M} matches per
-replicate too, and matching doesn't depend on the outcome at all, so the
+its congeniality test rejected and this is the recommended fallback),
+pass that result as \code{diagnostics} (with \code{run_existence_cache = TRUE},
+the default) to reuse its bootstrap instead of rerunning one from
+scratch -- matching doesn't depend on the outcome at all, so the
 matches it already did can be refit under this test's own-draw null for
 free instead of matching a second time. This turns \code{existence_test()}
 from another \code{n_boot}-replicate bootstrap into an essentially instant

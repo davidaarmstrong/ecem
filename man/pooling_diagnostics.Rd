@@ -13,18 +13,22 @@ pooling_diagnostics(
   estimator = NULL,
   covariates = NULL,
   pooled = NULL,
-  n_boot = 200,
+  run_congeniality = TRUE,
+  congeniality_position = "mid",
   run_retention = TRUE,
+  run_existence_cache = TRUE,
+  run_excess_variance = FALSE,
+  n_boot = 200,
   alpha = 0.05,
   progress = interactive()
 )
 }
 \arguments{
 \item{data}{A data frame, the same one used to produce \code{draws}. Needed
-again here because both the flatness and excess-variance tests rerun
+again here because the flatness and congeniality tests both rerun
 parts of the pipeline from scratch -- the flatness test on the full,
-pre-matching sample, and the excess-variance test on resampled data
-redrawn from \code{cutpoint_specs}. (Unlike \code{treat_var}/\code{outcome_var}/
+pre-matching sample, and the congeniality test on a freshly matched
+fixed specification. (Unlike \code{treat_var}/\code{outcome_var}/
 \code{cutpoint_specs}, \code{data} is not stored on \code{draws} -- keeping a full
 copy of the data as an attribute would be wasteful and could go
 stale, so it's always passed fresh.)}
@@ -37,52 +41,72 @@ recover these from \code{draws}'s attributes; supply them explicitly to
 override, or if \code{draws} doesn't carry them (see Details).}
 
 \item{estimator, covariates}{\code{NULL} (the default) to recover these from
-\code{draws}'s attributes too (see \code{\link[=run_M_draws]{run_M_draws()}}), so the excess-variance
-bootstrap refits draws the same way \code{draws} was actually computed.}
+\code{draws}'s attributes too (see \code{\link[=run_M_draws]{run_M_draws()}}), so any bootstrap
+refits draws the same way \code{draws} was actually computed.}
 
 \item{pooled}{Optional; the result of \link[=pool_draws]{pool_draws(draws)}.
 Computed automatically if not supplied.}
 
-\item{n_boot}{Integer; number of bootstrap replicates for the
-excess-variance test. Kept modest by default for interactive use; use
-at least a few hundred for actual inference.}
+\item{run_congeniality}{Logical; whether to run \code{\link[=congeniality_test]{congeniality_test()}}.
+Defaults to \code{TRUE}.}
+
+\item{congeniality_position}{\code{"mid"} (default), \code{"low"}, or \code{"high"} --
+passed straight through to \code{\link[=congeniality_test]{congeniality_test()}}'s \code{position}.}
 
 \item{run_retention}{Logical; whether to compute the retention-
 interaction (\code{FSATT_m - ATT}) diagnostic. Defaults to \code{TRUE}; it is
-cheap (no bootstrapping) and is exactly what the printed guidance
-points to when flatness and excess-variance disagree.}
+cheap (no bootstrapping, no rematching) and is exactly what the
+printed guidance points to when flatness and the congeniality test
+disagree.}
+
+\item{run_existence_cache}{Logical; whether to precompute and cache the
+bootstrap \code{\link[=existence_test]{existence_test()}} would otherwise redo itself (see
+Details). Defaults to \code{TRUE}.}
+
+\item{run_excess_variance}{Logical; whether to also compute the
+superseded resampling-based excess-variance test (see Details).
+Defaults to \code{FALSE}.}
+
+\item{n_boot}{Integer; number of bootstrap replicates, used if either
+\code{run_existence_cache} or \code{run_excess_variance} is \code{TRUE} (ignored
+otherwise). Kept modest by default for interactive use; use at least
+a few hundred for actual inference.}
 
 \item{alpha}{Significance level used to label each test's verdict in
 the printed output (and to choose which guidance
 \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} prints). Defaults to \code{0.05}.}
 
-\item{progress}{Logical; show a text progress bar over the excess-
-variance test's \code{n_boot} bootstrap replicates. Passed straight through
-to \code{\link[=excess_variance_test]{excess_variance_test()}}; see its documentation. Defaults to
-\code{interactive()}.}
+\item{progress}{Logical; show a text progress bar over the bootstrap's
+\code{n_boot} replicates, if it runs at all (see \code{run_existence_cache}/
+\code{run_excess_variance}). Defaults to \code{interactive()}.}
 }
 \value{
 An object of class \code{"ecem_pooling_diagnostics"}, a list with
 elements \code{flatness} (named list of \code{\link[=flatness_test_XE]{flatness_test_XE()}} results, one
-per elicited/regime covariate), \code{excess_variance} (same shape as
-\code{\link[=excess_variance_test]{excess_variance_test()}}'s result), \code{retention} (\code{NULL} if
+per elicited/regime covariate), \code{congeniality} (\code{NULL} if
+\code{run_congeniality = FALSE} or nothing in \code{cutpoint_specs} is
+elicited, else \code{\link[=congeniality_test]{congeniality_test()}}'s result), \code{excess_variance}
+(\code{NULL} unless \code{run_excess_variance = TRUE}), \code{retention} (\code{NULL} if
 \code{run_retention = FALSE}, else a list with \code{gap}, \code{mean}, \code{sd}),
 \code{pooled}, \code{M}, \code{K} (from \code{\link[=count_achievable_configs]{count_achievable_configs()}}, used by
 \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} to decide whether recommending
-exact enumeration is actually practical here), \code{exact}, \code{alpha}, and
-\code{existence_boot} (a cache of this call's bootstrap matches, refit
-under each draw's own null, for \code{\link[=existence_test]{existence_test()}}'s \code{diagnostics}
-argument to reuse -- see Details).
+exact enumeration is actually practical for pooling precision),
+\code{exact}, \code{alpha}, and \code{existence_boot} (\code{NULL} unless
+\code{run_existence_cache = TRUE}; a cache of this call's bootstrap
+matches, refit under each draw's own null, for \code{existence_test()}'s
+\code{diagnostics} argument to reuse -- see Details).
 }
 \description{
 Runs the pre-matching flatness test (\code{\link[=flatness_test_XE]{flatness_test_XE()}}, once per
 elicited or \code{\link[=regime]{regime()}} covariate, over that covariate's full union
-range), the excess-variance test on the realized draws
-(\code{\link[=excess_variance_test]{excess_variance_test()}}), and, by default, the retention-interaction
-diagnostic (\code{\link[=cov_retention_per_draw]{cov_retention_per_draw()}}) -- the three checks Section 6.3
-of the paper uses to decide whether pooling via Rubin's rules is
-trustworthy, and what to report if it is not. \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}}
-reports the results together with that decision logic spelled out.
+range), the congeniality test (\code{\link[=congeniality_test]{congeniality_test()}}, at a single fixed
+representative specification -- see its documentation for why this
+replaced the earlier resampling-based excess-variance design), and, by
+default, the retention-interaction diagnostic (\code{\link[=cov_retention_per_draw]{cov_retention_per_draw()}})
+-- the three checks Section 6.3 of the paper uses to decide whether
+pooling via Rubin's rules is trustworthy, and what to report if it is
+not. \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} reports the results together
+with that decision logic spelled out.
 }
 \details{
 \code{treat_var}, \code{outcome_var}, and \code{cutpoint_specs} are recovered from
@@ -93,17 +117,35 @@ didn't come from \code{\link[=run_M_draws]{run_M_draws()}} (e.g. it was assemble
 or you deliberately want to diagnose against a different spec than the
 one that produced \code{draws}.
 
+Neither the flatness test nor the congeniality test needs any
+covariate in \code{cutpoint_specs} to actually be elicited -- if none is
+(an all-fixed/exact spec), both are skipped gracefully (\code{flatness}
+comes back an empty list and \code{congeniality} comes back \code{NULL}) rather
+than erroring, since there is nothing to test congeniality of.
+
 This function does not itself run \code{\link[=existence_test]{existence_test()}}, even when the
-excess-variance test rejects and the printed guidance recommends it --
-that decision is left as a deliberate next step rather than something to
-run automatically inside a diagnostics call. It does, however, do the
-expensive part of existence_test()'s work as a side effect: the same \code{M}
-matches per bootstrap replicate used here for the excess-variance test
-are also refit under each draw's own null and cached (as
-\code{existence_boot}), since matching never depends on the outcome and so
-those matches are reusable for free. Pass this function's result as
-\code{existence_test()}'s \code{diagnostics} argument to use that cache instead of
-bootstrapping a second time.
+congeniality test rejects and the printed guidance recommends it --
+that decision is left as a deliberate next step. It can, however,
+precompute the expensive part of \code{existence_test()}'s own work as a
+side effect (\code{run_existence_cache = TRUE}, the default): a bootstrap
+that resamples the retained-and-treated units and refits each draw's
+own null, cached as \code{existence_boot} for \code{existence_test()}'s
+\code{diagnostics} argument to reuse instead of bootstrapping a second time.
+Set \code{run_existence_cache = FALSE} if you only want the cheap (no
+resampling) congeniality/retention diagnostics and don't plan to call
+\code{existence_test()} afterward -- that skips the bootstrap entirely,
+which otherwise runs unconditionally regardless of whether anything
+downstream needs it.
+
+\code{run_excess_variance = FALSE} by default: \code{\link[=excess_variance_test]{excess_variance_test()}} is
+the earlier, resampling-based congeniality design the paper's Appendix
+documents as invalid (near-zero power regardless of true heterogeneity,
+for reasons rooted in the bootstrap's inconsistency for discrete
+matching estimators). It's kept computable here, off by default, only
+for reproducing that earlier design or comparing against it directly --
+it is no longer part of the recommended workflow, and
+\code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} does not use it to make any
+decision.
 }
 \examples{
 \donttest{

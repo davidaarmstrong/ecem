@@ -126,7 +126,227 @@ excess_variance_from_B_null <- function(B_null, B_obs) {
   )
 }
 
+#' Congeniality test: does FSATT drift within the elicited range?
+#'
+#' Tests the condition Rubin's-rules pooling actually needs (the paper's
+#' Section on congeniality): whether the FSATT varies across the elicited
+#' range of the coarsened covariate(s), rather than
+#' [flatness_test_XE()]'s weaker pre-matching proxy for the same question
+#' (run before any coarsening is applied, on the full retained-eligible
+#' sample).
+#'
+#' This supersedes [excess_variance_test()], the earlier, resampling-based
+#' design the paper's Appendix documents as invalid -- CEM's discrete
+#' matching solution is destabilized by resampling with replacement
+#' (Abadie & Imbens 2008's bootstrap-inconsistency result for matching
+#' estimators), which produced near-zero power regardless of true
+#' heterogeneity. This test is not run on the `M` realized coarsening
+#' draws at all, and needs no resampling and no null-imposed outcome
+#' construction: it fixes ONE representative specification within each
+#' elicited covariate's range, matches at that specification with CEM's
+#' own pruning rule, and tests a treatment-by-bin interaction on the
+#' resulting matched, common-support-restricted, CEM-weighted sample -- a
+#' design adapted from the binning estimator of Hainmueller, Mummolo & Xu
+#' (2019) for diagnosing linearity assumptions in interaction models.
+#' Because CEM's weights are design weights (built to recover the FSATT),
+#' not inverse-variance weights, the interaction is tested by a Wald test
+#' using a heteroskedasticity-consistent sandwich covariance matrix (the
+#' leverage-adaptive HC4 correction of Cribari-Neto 2004) rather than the
+#' classical weighted-least-squares F-test, which assumes the latter.
+#'
+#' Every **elicited** (list-of-ranges) entry in `cutpoint_specs` gets a
+#' single fixed cutpoint per range, taken from `position` (or from
+#' `fixed_cutpoints`, if supplied for that covariate) rather than drawn.
+#' **Fixed**, **exact**, and excluded (`NULL`) entries pass through to
+#' [elicit_and_match()] unchanged and enter the test as additive controls.
+#' When more than one covariate is elicited, they are tested *jointly*:
+#' bins from every elicited covariate are crossed into one combined
+#' factor, and the interaction is tested against that joint factor,
+#' matching the joint-flatness requirement in the paper (marginal
+#' flatness in each elicited covariate is necessary but not sufficient
+#' for congeniality when more than one is elicited) rather than testing
+#' each covariate's flatness separately. [regime()] entries are not
+#' currently supported here -- a "fixed representative specification" has
+#' no single natural meaning across competing regimes -- supply an
+#' explicit entry in `fixed_cutpoints` for any regime covariate you want
+#' included.
+#'
+#' Requires the \pkg{sandwich} and \pkg{lmtest} packages (both Imports of
+#' this package, so ordinarily already installed).
+#'
+#' @param data A data frame containing `treat_var`, `outcome_var`, and
+#'   every covariate in `cutpoint_specs`.
+#' @param treat_var Character; name of the 0/1 treatment indicator column.
+#' @param outcome_var Character; name of the outcome column.
+#' @param cutpoint_specs A named list, the same format [elicit_and_match()]
+#'   takes (see [draw_cutpoints_for_var()] for the five kinds of entry).
+#' @param position `"mid"` (default), `"low"`, or `"high"`: which point
+#'   within each elicited range becomes that range's fixed cutpoint -- the
+#'   range's mean, lower bound, or upper bound respectively. Ignored for
+#'   any covariate with an explicit override in `fixed_cutpoints`. Running
+#'   the test at more than one `position` and comparing is a reasonable
+#'   sensitivity check; this function itself only ever tests one.
+#' @param fixed_cutpoints Optional named list, one entry per elicited
+#'   covariate, of explicit numeric cutpoint vectors to use instead of
+#'   deriving them from `position`.
+#'
+#' @return A list with elements `p_value` (from the HC4-robust Wald
+#'   F-test; `NA` if the matched sample is empty or too small to identify
+#'   the interaction model -- the same graceful-failure convention
+#'   [fit_effect()] uses for an aliased coefficient, rather than
+#'   erroring), `model` (the fitted interaction model), `n` (matched
+#'   sample size), `n_bins` (levels of the joint bin factor tested),
+#'   `elicited_vars` (which covariates were tested), `fixed_cutpoints`
+#'   (the cutpoints actually used, named by covariate), and `position`.
+#'
+#' @examples
+#' \donttest{
+#' set.seed(1)
+#' pop <- simulate_population(N = 1000, heterogeneous = TRUE)
+#' specs <- list(age = list(c(25, 33), c(60, 68)), educ = c(12, 16))
+#' congeniality_test(pop, "D", "Y", specs)
+#' congeniality_test(pop, "D", "Y", specs, position = "low")
+#' }
+#'
+#' @export
+congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
+                               position = c("mid", "low", "high"),
+                               fixed_cutpoints = NULL) {
+  if (!requireNamespace("sandwich", quietly = TRUE) || !requireNamespace("lmtest", quietly = TRUE)) {
+    stop("congeniality_test() requires the 'sandwich' and 'lmtest' packages ",
+         "(both Imports of ecem; install via install.packages(c('sandwich','lmtest')) ",
+         "if somehow missing).")
+  }
+  position <- match.arg(position)
+
+  var_names   <- names(cutpoint_specs)
+  is_regime   <- vapply(cutpoint_specs, inherits, logical(1), what = "cem_regime_spec")
+  is_elicited <- vapply(cutpoint_specs, function(spec) is.list(spec) && !inherits(spec, "cem_regime_spec"),
+                         logical(1))
+
+  missing_regime_fix <- var_names[is_regime & !(var_names %in% names(fixed_cutpoints))]
+  if (length(missing_regime_fix) > 0) {
+    stop(
+      "congeniality_test() does not derive a fixed representative specification ",
+      "for regime() covariates automatically (there's no single natural choice ",
+      "across competing regimes). Supply an explicit entry in fixed_cutpoints for: ",
+      paste(missing_regime_fix, collapse = ", ")
+    )
+  }
+
+  elicited_vars <- var_names[is_elicited]
+  if (length(elicited_vars) == 0) {
+    stop("congeniality_test() needs at least one elicited (list-of-ranges) ",
+         "covariate in cutpoint_specs -- nothing to test congeniality of otherwise.")
+  }
+
+  fixed_specs   <- cutpoint_specs
+  resolved_cuts <- list()
+  for (v in elicited_vars) {
+    if (!is.null(fixed_cutpoints[[v]])) {
+      cuts <- sort(fixed_cutpoints[[v]])
+    } else {
+      ranges <- cutpoint_specs[[v]]
+      cuts <- sort(vapply(ranges, function(r) {
+        switch(position, mid = mean(r), low = r[1], high = r[2])
+      }, numeric(1)))
+    }
+    resolved_cuts[[v]] <- cuts
+    fixed_specs[[v]]   <- cuts
+  }
+
+  matched <- elicit_and_match(data, treat_var, fixed_specs)
+
+  if (length(matched$retained_idx) == 0) {
+    return(list(p_value = NA_real_, model = NULL, n = 0, n_bins = NA_integer_,
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+  }
+
+  sub <- data[matched$retained_idx, , drop = FALSE]
+
+  bin_list <- lapply(elicited_vars, function(v) {
+    cut(sub[[v]], breaks = c(-Inf, resolved_cuts[[v]], Inf), include.lowest = TRUE)
+  })
+  names(bin_list) <- elicited_vars
+  sub$.bin <- if (length(bin_list) == 1) {
+    bin_list[[1]]
+  } else {
+    do.call(interaction, c(bin_list, list(drop = TRUE)))
+  }
+
+  ## Drop any elicited bin (or, for >1 elicited covariate, joint bin) the
+  ## matched-and-retained sample doesn't actually populate. CEM's own
+  ## pruning (a bin with only one treatment arm has no counterfactual and
+  ## is dropped entirely) or a position/fixed_cutpoints choice that puts a
+  ## cutpoint outside the retained sample's range can both leave a
+  ## declared factor level with zero rows behind it -- contributing an
+  ## identically-zero column to the design matrix at best, and, if it
+  ## collapses .bin to a single remaining level, making R's own contrasts
+  ## machinery error outright (a factor needs at least 2 levels to get a
+  ## contrast matrix) rather than fitting at all. Fail gracefully instead,
+  ## the same convention used below for a rank-deficient/zero-residual-df
+  ## fit, rather than letting that error propagate.
+  sub$.bin <- droplevels(sub$.bin)
+  if (nlevels(sub$.bin) < 2) {
+    return(list(p_value = NA_real_, model = NULL, n = nrow(sub), n_bins = nlevels(sub$.bin),
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+  }
+
+  w <- cem_weights(sub[[treat_var]], matched$stratum)
+
+  ## Every matched covariate (elicited ones included, at their raw
+  ## uncoarsened values) enters as an additive linear control, alongside
+  ## the joint bin factor -- generalizes the "+ X_E + X_F" structure the
+  ## design was validated with to an arbitrary number of elicited/fixed
+  ## covariates.
+  linear_controls <- names(matched$kinds)[matched$kinds != "excluded"]
+  rhs_extra <- if (length(linear_controls) > 0) {
+    paste("+", paste(linear_controls, collapse = " + "))
+  } else {
+    ""
+  }
+  f0 <- stats::as.formula(paste(outcome_var, "~", treat_var, "+ .bin", rhs_extra))
+  f1 <- stats::as.formula(paste(outcome_var, "~", treat_var, "* .bin", rhs_extra))
+  fit0 <- stats::lm(f0, data = sub, weights = w)
+  fit1 <- stats::lm(f1, data = sub, weights = w)
+
+  ## Small/degenerate matched samples (too few units per treatment x bin
+  ## cell) can leave the interaction model rank-deficient or without
+  ## residual degrees of freedom to test against -- fail gracefully with
+  ## an NA p-value, the same convention fit_effect() uses for an aliased
+  ## D coefficient, rather than letting lmtest::waldtest() error out.
+  rank_ok     <- fit1$rank == length(stats::coef(fit1)) && !anyNA(stats::coef(fit1))
+  df_resid_ok <- stats::df.residual(fit1) > 0
+  if (!rank_ok || !df_resid_ok) {
+    return(list(p_value = NA_real_, model = fit1, n = nrow(sub), n_bins = nlevels(sub$.bin),
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+  }
+
+  wt <- tryCatch(
+    lmtest::waldtest(fit0, fit1, vcov = function(x) sandwich::vcovHC(x, type = "HC4"), test = "F"),
+    error = function(e) NULL
+  )
+  p_value <- if (is.null(wt)) NA_real_ else wt[["Pr(>F)"]][2]
+
+  list(
+    p_value         = p_value,
+    model           = fit1,
+    n               = nrow(sub),
+    n_bins          = nlevels(sub$.bin),
+    elicited_vars   = elicited_vars,
+    fixed_cutpoints = resolved_cuts,
+    position        = position
+  )
+}
+
 #' Excess-variance bootstrap test on the realized draws
+#'
+#' **Superseded by [congeniality_test()]** -- kept here, off by default in
+#' [pooling_diagnostics()], only for reproducing this earlier design or
+#' comparing against it directly; it is no longer part of the recommended
+#' workflow (see the paper's Appendix for why: CEM's discrete matching
+#' solution is destabilized by resampling with replacement, which made
+#' this test's power near zero regardless of true heterogeneity).
 #'
 #' Tests whether the observed between-draw variance `B` exceeds what
 #' sampling noise alone predicts, computed directly on the realized draws
@@ -198,7 +418,7 @@ excess_variance_test <- function(data, treat_var, outcome_var, cutpoint_specs,
 
 #' Simonsohn-style existence test
 #'
-#' A fallback for when [excess_variance_test()] rejects and pooling via
+#' A fallback for when [congeniality_test()] rejects and pooling via
 #' Rubin's rules is no longer trusted. For each draw `m` separately, forces
 #' that draw's *own* null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}) --
 #' deliberately different from [excess_variance_test()], which forces one
@@ -214,11 +434,10 @@ excess_variance_test <- function(data, treat_var, outcome_var, cutpoint_specs,
 #' override, or if `draws` doesn't carry them.
 #'
 #' If you already ran [pooling_diagnostics()] on this `draws` (e.g. because
-#' its excess-variance test rejected and this is the recommended fallback),
-#' pass that result as `diagnostics` to reuse its bootstrap instead of
-#' rerunning one from scratch -- [pooling_diagnostics()] and
-#' [excess_variance_test()] resample rows and rerun `M` matches per
-#' replicate too, and matching doesn't depend on the outcome at all, so the
+#' its congeniality test rejected and this is the recommended fallback),
+#' pass that result as `diagnostics` (with `run_existence_cache = TRUE`,
+#' the default) to reuse its bootstrap instead of rerunning one from
+#' scratch -- matching doesn't depend on the outcome at all, so the
 #' matches it already did can be refit under this test's own-draw null for
 #' free instead of matching a second time. This turns `existence_test()`
 #' from another `n_boot`-replicate bootstrap into an essentially instant
@@ -288,6 +507,12 @@ existence_test <- function(data, draws, treat_var = NULL, outcome_var = NULL,
                             n_boot = 200, stat_fun = stats::median,
                             progress = interactive()) {
   stat_label <- deparse(substitute(stat_fun))
+  ## An unmodified default (stat_fun = stats::median) substitutes the
+  ## literal, namespace-qualified expression from the function signature
+  ## rather than the bare name -- strip any "pkg::" qualifier so the
+  ## printed label reads "median" whether the caller relied on the
+  ## default or wrote stats::median explicitly themselves.
+  stat_label <- sub("^[A-Za-z0-9_.]+::", "", stat_label)
   if (nchar(stat_label) > 30 || grepl("^function", stat_label)) {
     stat_label <- "custom"
   }

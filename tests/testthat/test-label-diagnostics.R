@@ -43,7 +43,22 @@ test_that("label_diagnostics accepts an explicit, larger covariates set", {
   data$z <- c(1, 1, 1, 1, 2, 2, 2, 2)
   specs <- list(x = c(7), z = NULL)
   draws <- run_M_draws(data, "D", "Y", specs, M = 5)
-  lab <- label_diagnostics(data, draws, covariates = c("x", "z"))
+  ## x and this hand-constructed z jointly separate treatment status
+  ## perfectly on this tiny, deterministic toy sample -- fit_propensity()'s
+  ## glm() correctly warns about it (fitted probabilities numerically 0 or
+  ## 1), and that warning is left untouched at the source deliberately: on
+  ## real data, it's a legitimate signal that the propensity model has
+  ## degenerated and p_hat(X) near 0/1 could destabilize the ATT-ATE
+  ## covariance term downstream, so fit_propensity() shouldn't be modified
+  ## to hide it just because this particular test triggers it too. Assert
+  ## on the warning explicitly instead of suppressing it, so if a future
+  ## change to make_toy_data()/z stops triggering separation (or starts
+  ## triggering a different warning), that shows up as a test failure
+  ## rather than silently passing either way.
+  expect_warning(
+    lab <- label_diagnostics(data, draws, covariates = c("x", "z")),
+    "fitted probabilities numerically 0 or 1 occurred"
+  )
   expect_equal(lab$covariates, c("x", "z"))
 })
 

@@ -1,0 +1,285 @@
+---
+title: "Getting Started with ecem"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Getting Started with ecem}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+## What this vignette is
+
+**ecem** replaces a single fixed coarsening choice in coarsened exact
+matching (CEM) with an elicited *prior* over cutpoints, draws repeatedly
+from it, matches and estimates on each draw, and pools the results --
+along with diagnostics for when that pooling is (and is not)
+trustworthy. The methodology is described in "Elicited Priors for
+Coarsening Regimes in Coarsened Exact Matching"; this vignette does not
+re-derive it, but walks through the package's workflow end to end on
+simulated data, in enough detail to use as a template for your own
+replication analysis.
+
+Three things this vignette covers, in order:
+
+1. **One elicited covariate, one theory of where to coarsen it** ("the
+   one-regime case") -- the basic draw-match-pool workflow.
+2. **One elicited covariate, two competing theories of where to coarsen
+   it** ("the two-regime case") -- [regime()], for when you don't want to
+   commit to a single elicitation.
+3. **The diagnostics** -- whether pooling was actually valid, the
+   fallback for when it wasn't, and how to label the pooled estimate as
+   an FSATT, ATT, or ATE.
+
+A last section collects this into a checklist for adapting the template
+to your own data.
+
+```{r setup}
+library(ecem)
+```
+
+## Example data
+
+Everything below runs on `simulate_population()`, a small data-generating
+function included with the package for examples and demos -- not a
+substitute for your own data, but a stand-in so this vignette is fully
+self-contained and fast to run. It returns `age`, `income`, `educ`,
+`region` (three categories), `noise` (unrelated to treatment or
+outcome), a 0/1 treatment `D`, and an outcome `Y`. `tau0` is the true
+treatment effect baked into the simulation, so you have a known answer
+to check the pooled estimate against.
+
+```{r}
+set.seed(20260805)
+pop <- simulate_population(N = 2000, tau0 = 3, heterogeneous = FALSE)
+head(pop)
+```
+
+## Part 1: One regime -- a single elicited covariate
+
+Suppose `age` is the covariate you want to coarsen, and you have one
+substantive theory of where the breakpoints should fall: a *lifecycle*
+account, with breakpoints somewhere around the end of early adulthood,
+midlife, and retirement. You're not sure of the exact ages -- that
+uncertainty is exactly what an elicited cutpoint captures.
+
+Every covariate in a `cutpoint_specs` list is one of five things (see
+`?regime` for the full description): a list of ranges (elicited, drawn
+fresh each time), a plain numeric vector (fixed, identical every draw),
+`"exact"` (match on the raw value), `NULL` (excluded from matching), or
+a [regime()] object (Part 2, below). Here, `age` is elicited across
+three uncertainty ranges (three breakpoints, so four age bins); `educ`
+is fixed at two cutpoints the analyst is comfortable committing to;
+`region` matches exactly on its three raw categories; `income` and
+`noise` are excluded from matching entirely.
+
+```{r}
+cutpoint_specs_1 <- list(
+  age    = list(c(22, 28), c(40, 48), c(62, 68)),  # elicited (X_E)
+  educ   = c(12, 16),                              # fixed (X_F)
+  region = "exact",                                # exact match
+  income = NULL,                                   # excluded
+  noise  = NULL                                     # excluded
+)
+```
+
+`run_M_draws()` draws `M` coarsenings from this spec, matches, and
+estimates the effect on each draw's matched sample -- by default via a
+CEM-weighted regression of `Y` on `D` and the matching covariates (see
+`?fit_effect` for the alternative, a simpler stratum mean-difference).
+
+```{r}
+set.seed(1)
+draws_1 <- run_M_draws(pop, treat_var = "D", outcome_var = "Y",
+                        cutpoint_specs = cutpoint_specs_1, M = 30)
+draws_1
+```
+
+Each row above is one draw's own `tau_hat`; `pool_draws()` combines
+them via Rubin's rules into a single point estimate and confidence
+interval. Since `tau0 = 3` was the effect used to simulate this data,
+`tau_bar` should land in the neighborhood of 3.
+
+```{r}
+pooled_1 <- pool_draws(draws_1)
+pooled_1
+```
+
+`as.data.frame()` on the draws object gives you the same per-draw table
+programmatically -- useful for plotting the spread of `tau_hat` across
+draws, or feeding into your own downstream code.
+
+```{r}
+df_1 <- as.data.frame(draws_1)
+str(df_1)
+```
+
+## Part 2: Two regimes -- competing theories of where to coarsen
+
+Now suppose a colleague argues for a *generational* account instead --
+coarsening `age` at cohort boundaries rather than lifecycle stages. You
+don't have to pick one: [regime()] lets a covariate draw from either of
+two (or more) named, competing elicited cutpoint sets, with a draw
+always using one theory or the other in full -- never, say, the first
+lifecycle breakpoint mixed with the last generational one.
+
+```{r}
+cutpoint_specs_2 <- list(
+  age = regime(
+    lifecycle    = list(c(22, 28), c(40, 48), c(62, 68)),
+    generational = list(c(24, 28), c(42, 46), c(58, 62), c(76, 80))
+  ),
+  educ   = c(12, 16),
+  region = "exact",
+  income = NULL,
+  noise  = NULL
+)
+```
+
+By default each named regime is equally likely to be drawn (pass
+`weights = ` to `regime()` to change that). Everything else about the
+workflow is identical -- `run_M_draws()` doesn't need to know a
+covariate has competing regimes rather than one:
+
+```{r}
+set.seed(2)
+draws_2 <- run_M_draws(pop, "D", "Y", cutpoint_specs_2, M = 30)
+```
+
+`as.data.frame()` gains a `regime_age` column whenever a covariate used
+[regime()], recording which theory each draw actually used:
+
+```{r}
+df_2 <- as.data.frame(draws_2)
+table(df_2$regime_age)
+```
+
+```{r}
+pooled_2 <- pool_draws(draws_2)
+pooled_2
+```
+
+If the two theories are both defensible ways of expressing the same
+underlying coarsening judgment, `tau_bar` above pools over both without
+you having to choose. If you also want to see whether the two theories
+give meaningfully different answers on their own, compare `tau_hat`
+within each (informal -- not a formal test of whether they differ):
+
+```{r}
+tapply(df_2$tau_hat, df_2$regime_age, mean, na.rm = TRUE)
+```
+
+(When the achievable number of distinct configurations is small enough
+-- e.g. because an elicited covariate has few practically distinct
+observed values within its range -- `run_M_draws(..., exact_if_K_leq =)`
+replaces Monte Carlo draws with exact enumeration, eliminating
+simulation error outright. `demo("achievable-configuration-ceiling",
+"ecem")` walks through that case; it isn't repeated here since the
+draw-match-pool code above is unchanged either way.)
+
+## Part 3: Diagnostics -- is pooling actually trustworthy?
+
+A pooled `tau_bar` is only as trustworthy as the assumption that every
+draw is estimating the same underlying quantity. `pooling_diagnostics()`
+bundles the checks for that: a pre-matching flatness test on each
+elicited covariate, and a bootstrap excess-variance test computed
+directly on the realized draws (`n_boot` is kept small below so this
+vignette runs quickly -- use several hundred for actual inference).
+
+```{r}
+set.seed(3)
+diag_1 <- pooling_diagnostics(pop, draws_1, pooled = pooled_1,
+                               n_boot = 100, progress = FALSE)
+diag_1
+```
+
+With `heterogeneous = FALSE` in `simulate_population()`, the true effect
+really is flat in `age`, so both tests should typically fail to reject,
+and the printout above should recommend pooling with no caveat.
+
+### When congeniality fails
+
+To see the other branch of the workflow, simulate a population where the
+effect genuinely does vary with the elicited covariate
+(`heterogeneous = TRUE` makes `tau(age)` a real linear function of
+`age`, which is exactly what the flatness/excess-variance tests are
+built to catch):
+
+```{r}
+set.seed(4)
+pop_het <- simulate_population(N = 2000, tau0 = 3, heterogeneous = TRUE)
+draws_het <- run_M_draws(pop_het, "D", "Y", cutpoint_specs_1, M = 30)
+pooled_het <- pool_draws(draws_het)
+
+diag_het <- pooling_diagnostics(pop_het, draws_het, pooled = pooled_het,
+                                 n_boot = 100, progress = FALSE)
+diag_het
+```
+
+If excess-variance rejects here, `pool_draws()`'s `tau_bar` is no longer
+trustworthy as a single pooled estimate, regardless of what the
+flatness test says. The recommended fallback is a Simonsohn-style
+existence test -- and since `pooling_diagnostics()` already bootstrapped
+matches on this same `draws_het`, passing it in as `diagnostics =` reuses
+that bootstrap instead of rerunning one from scratch:
+
+```{r}
+existence_test(pop_het, draws_het, diagnostics = diag_het)
+```
+
+Rejecting here is evidence that *some* nonzero effect exists somewhere
+among the draws -- not validation of any single pooled point estimate.
+When you land in this branch on real data, report the individual draws
+descriptively (`as.data.frame(draws_het)`) rather than a pooled
+`tau_bar`.
+
+### Which estimand does the pooled estimate target?
+
+Separately from whether pooling is *valid*, `label_diagnostics()`
+addresses what the pooled estimate actually *is* an estimate of: the
+feasible-sample ATT (FSATT, defined on whichever units happened to be
+retained), the ATT, or the ATE. Two covariance-based diagnostics
+separate these -- see `?label_diagnostics` for the full detail -- and
+the print method below suggests a label based on whether each term is
+large relative to the pooled estimate's own standard error (a heuristic
+this package proposes, not a threshold the paper specifies).
+
+```{r}
+label_diagnostics(pop, draws_1)
+```
+
+Per the paper, treat these numbers as interpretive aids for how to
+*report* `tau_bar` -- never as a correction to subtract off the point
+estimate itself.
+
+## Adapting this template to your own data
+
+Swap `simulate_population()` for `read.csv()` (or however your data
+gets loaded) and work through this checklist:
+
+- `treat_var` needs to be a 0/1 column; `outcome_var` numeric.
+- For each covariate, decide which of the five `cutpoint_specs` kinds it
+  is: **elicited** (you're genuinely uncertain where to coarsen it, or
+  it's the covariate a theoretical dispute is about), **fixed** (you're
+  confident in a specific coarsening), `"exact"` (categorical, no
+  coarsening needed), or `NULL` (excluded from matching). Elicited
+  ranges should reflect real uncertainty or a real disagreement in the
+  literature -- not be padded out arbitrarily to widen the prior.
+- If two (or more) genuinely competing accounts exist for how a
+  covariate should be coarsened, use [regime()] instead of picking one
+  and hoping it's right.
+- Choose `M` (or `exact_if_K_leq` if the achievable-configuration count
+  is small -- check with `count_achievable_configs()`).
+- Always run `pooling_diagnostics()` before reporting a pooled `tau_bar`
+  from `pool_draws()`. If excess-variance rejects, fall back to
+  `existence_test()` and report draws descriptively instead.
+- Run `label_diagnostics()` to know whether to report the result as an
+  FSATT, ATT, or ATE.
+
+`demo(package = "ecem")` lists the package's other worked examples
+(exact enumeration vs. Monte Carlo, competing regimes in more depth);
+`?ecem` is the package-level overview with a map of every exported
+function.

@@ -205,9 +205,16 @@ print.ecem_pooled <- function(x, level = 0.95, digits = 4, ...) {
   invisible(x)
 }
 
-## When flatness rejects, excess-variance doesn't, and the retention
-## diagnostic doesn't explain it away, the next step depends on whether
-## exact enumeration is actually within reach:
+## No longer called by print.ecem_pooling_diagnostics() (the congeniality
+## test it used to accompany doesn't depend on M/K at all, so this M/K
+## guidance is no longer causally tied to its verdict -- see the comment
+## on K in pooling_diagnostics()). Kept here, unused, as a documented
+## building block for the separate exact-enumeration-vs-Monte-Carlo
+## pooling-precision question, which K/M still answer.
+##
+## Originally: when flatness rejects, excess-variance doesn't, and the
+## retention diagnostic doesn't explain it away, the next step depended
+## on whether exact enumeration was actually within reach:
 ##   - already exact (every achievable config was run): not a power
 ##     problem at all -- there's no simulation error left to add power
 ##     against, so point at a real scope difference instead.
@@ -252,14 +259,14 @@ power_next_step <- function(x) {
 
 #' Print a pooling-diagnostics result
 #'
-#' Reports the flatness, excess-variance, and (if computed)
-#' retention-interaction diagnostics from [pooling_diagnostics()]
-#' together, and spells out which of the paper's Section 6.3 workflow
-#' outcomes they imply: pool cleanly, flag a discrepancy (and check
-#' whether the retention diagnostic explains it -- and, if not, whether
-#' exact enumeration is practical here or a larger `M` is the more
-#' realistic fix), or treat congeniality as having failed and fall back on
-#' [existence_test()].
+#' Reports the flatness and congeniality diagnostics from
+#' [pooling_diagnostics()] together (and the retention-interaction and
+#' excess-variance diagnostics, if computed), and spells out which of the
+#' paper's Section 6.3 workflow outcomes they imply: pool cleanly, flag a
+#' discrepancy (and check whether the retention diagnostic explains it --
+#' and, if not, whether testing at a different position in the elicited
+#' range clarifies things), or treat congeniality as having failed and
+#' fall back on [existence_test()].
 #'
 #' @param x An object of class `"ecem_pooling_diagnostics"`.
 #' @param digits Integer; number of significant digits to print.
@@ -287,14 +294,37 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
     flatness_reject <- any(flat_p < x$alpha, na.rm = TRUE)
   }
 
-  ev <- x$excess_variance
-  ev_reject <- ev$p_value < x$alpha
-  cat(sprintf("Excess-variance test (on the %d realized %s):\n",
-              x$M, if (x$exact) "exactly-enumerated configuration(s)" else "Monte Carlo draw(s)"))
-  cat(sprintf("  p = %s   B_obs / median(B*) = %s   [%s]\n",
-              g(ev$p_value), g(ev$ratio),
-              if (ev_reject) "EXCESS VARIANCE DETECTED" else "no excess variance detected"))
-  cat("\n")
+  cg <- x$congeniality
+  cg_reject <- FALSE
+  if (is.null(cg)) {
+    cat("Congeniality test: not run (run_congeniality = FALSE, or nothing in this\n")
+    cat("spec is elicited -- there's nothing to test congeniality of).\n\n")
+  } else {
+    cg_reject <- isTRUE(cg$p_value < x$alpha)
+    cat(sprintf("Congeniality test (fixed specification, position = \"%s\", matched sample):\n",
+                cg$position))
+    if (is.na(cg$p_value)) {
+      cat(sprintf("  p = NA   n = %d   [matched sample too small/degenerate to test -- see congeniality_test()]\n",
+                  cg$n))
+    } else {
+      cat(sprintf("  p = %s   n = %d   n_bins = %d   [%s]\n",
+                  g(cg$p_value), cg$n, cg$n_bins,
+                  if (cg_reject) "FSATT DRIFTS across the elicited range" else "no drift detected"))
+    }
+    cat("\n")
+  }
+
+  if (!is.null(x$excess_variance)) {
+    ev <- x$excess_variance
+    ev_reject <- ev$p_value < x$alpha
+    cat(sprintf("Excess-variance test (superseded design, reproduced on request -- on the %d realized %s):\n",
+                x$M, if (x$exact) "exactly-enumerated configuration(s)" else "Monte Carlo draw(s)"))
+    cat(sprintf("  p = %s   B_obs / median(B*) = %s   [%s]\n",
+                g(ev$p_value), g(ev$ratio),
+                if (ev_reject) "excess variance detected" else "no excess variance detected"))
+    cat("  (Not used below -- see the paper's Appendix for why this design is invalid,\n")
+    cat("  and congeniality_test() for what replaced it.)\n\n")
+  }
 
   if (!is.null(x$retention)) {
     cat("Retention-interaction diagnostic (Gap_r = FSATT_m - ATT, per draw):\n")
@@ -303,11 +333,20 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
   }
 
   cat("--- What this implies (Section 6.3 workflow) ---\n")
-  if (ev_reject) {
-    cat("Excess-variance rejects: congeniality has failed regardless of the flatness\n")
+  if (is.null(cg)) {
+    cat("Congeniality test wasn't run -- rerun with run_congeniality = TRUE (and at\n")
+    cat("least one elicited covariate) for a verdict; flatness alone is a screen, not\n")
+    cat("a certificate.\n")
+  } else if (is.na(cg$p_value)) {
+    cat("Congeniality test returned no verdict (matched sample too small/degenerate at\n")
+    cat("this specification) -- try a different position, or treat this as missing\n")
+    cat("rather than as either outcome below.\n")
+  } else if (cg_reject) {
+    cat("Congeniality test rejects: congeniality has failed regardless of the flatness\n")
     cat("result. Report the draws descriptively and fall back on existence_test()\n")
     cat("rather than trusting the pooled T -- pass this object as diagnostics = to\n")
-    cat("reuse this bootstrap instead of rerunning it from scratch.\n")
+    cat("reuse its cached bootstrap instead of rerunning one from scratch (requires\n")
+    cat("run_existence_cache = TRUE, the default).\n")
     if (!is.null(x$retention)) {
       cat("The retention diagnostic above is worth reading now as a mechanism-locator:\n")
       cat("it isolates how much of the drift routes through the retention channel.\n")
@@ -317,16 +356,20 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
   } else if (!flatness_reject) {
     cat("Neither test rejects: pool by Rubin's rules with no caveat.\n")
   } else {
-    cat("Flatness rejects but excess-variance does not: pool by Rubin's rules, but\n")
-    cat("flag the discrepancy.\n")
+    cat("Flatness rejects but the congeniality test does not: pool by Rubin's rules,\n")
+    cat("but flag the discrepancy.\n")
     if (!is.null(x$retention)) {
       cat("If the retention diagnostic above is small and stable across draws, that's a\n")
-      cat("complete explanation for why B stayed quiet despite real heterogeneity.\n")
-      cat("If it is not small, this may just be a power problem at this M/K:\n")
-      cat(power_next_step(x))
+      cat("complete explanation for why the congeniality test stayed quiet despite real\n")
+      cat("heterogeneity in tau(x).\n")
+      cat("If it is not small, the fixed specification tested may simply sit where drift\n")
+      cat("is weak -- rerun congeniality_test() (or pooling_diagnostics() with\n")
+      cat("congeniality_position =) at \"low\" or \"high\" rather than \"mid\" before\n")
+      cat("concluding the discrepancy is benign.\n")
     } else {
       cat("Rerun with run_retention = TRUE to check whether the retention channel\n")
-      cat("explains the discrepancy before concluding it's a power problem.\n")
+      cat("explains the discrepancy, and consider testing at another position in the\n")
+      cat("elicited range before concluding it's benign.\n")
     }
   }
 
