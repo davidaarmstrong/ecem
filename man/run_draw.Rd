@@ -10,7 +10,9 @@ run_draw(
   outcome_var,
   cutpoint_specs,
   estimator = c("regression", "mean_diff"),
-  covariates = NULL
+  covariates = NULL,
+  min_n_per_arm = 1,
+  vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")
 )
 }
 \arguments{
@@ -35,6 +37,54 @@ Details.}
 (i.e. \code{names(matched$kinds)} minus any \code{"excluded"} entries) -- the
 same covariates that entered the matching. Ignored for
 \code{"mean_diff"}.}
+
+\item{min_n_per_arm}{Integer; minimum number of treated and control
+units a stratum needs to be retained. Defaults to \code{1}, i.e. the
+original rule (a stratum survives if it has \emph{any} unit in each arm)
+-- every existing caller is unaffected unless it opts into a larger
+value. Real, unrounded covariates can produce strata with just one or
+two units in one arm, especially once more than one covariate is
+elicited and their bins are crossed; such a stratum still counts as
+"matched" under the default rule, but contributes an extremely
+high-leverage, low-information stratum to whatever's estimated on top
+of it (e.g. \code{\link[=congeniality_test]{congeniality_test()}}'s treatment-by-bin interaction can
+become numerically unidentifiable -- see its documentation). Raising
+\code{min_n_per_arm} trims those thin strata at the source, the same way
+\code{has_treat & has_control} already trims strata with \emph{zero} units in
+an arm -- this is a stricter version of the identical mechanism, not
+a new one. Because the FSATT-ATT/ATT-ATE covariance identities are
+proven for any well-defined 0/1 retention indicator (not specifically
+the \verb{>= 1}-per-arm rule), a larger \code{min_n_per_arm} still targets a
+coherent FSATT -- just a more conditional one, restricted to a
+better-supported region of the covariate space. Applying it
+consistently wherever retention is decided (here, and hence in
+\code{\link[=run_draw]{run_draw()}}, \code{\link[=run_M_draws]{run_M_draws()}}, \code{\link[=congeniality_test]{congeniality_test()}}, and the
+bootstrap-based diagnostics) keeps that FSATT the same one throughout
+a given analysis, rather than letting the point estimate and a
+diagnostic silently disagree about which sample they're each
+describing.}
+
+\item{vcov_type}{\code{"classical"} (the default) for \code{summary.lm()}'s usual
+model-based standard error, or one of \code{"HC4"}, \code{"HC4m"}, \code{"HC3"},
+\code{"HC5"}, \code{"HC1"}, \code{"HC0"} for a heteroskedasticity-consistent ("HCCM"
+/ sandwich) standard error via \code{\link[sandwich:vcovHC]{sandwich::vcovHC()}} instead. Only
+affects \code{var_hat} (and hence any confidence interval or Rubin's-rules
+pooling built on it) -- \code{tau_hat} itself is the same either way, since
+it's the same weighted-least-squares coefficient regardless of which
+variance estimator is applied to it afterward. Ignored for
+\code{"mean_diff"}.
+
+The default is \code{"classical"} rather than matching
+\code{\link[=congeniality_test]{congeniality_test()}}'s HC4 default deliberately: CEM's control
+weights (\code{\link[=cem_weights]{cem_weights()}}) are balancing weights, not weights
+proportional to \code{1 / Var(residual)}, so the model-based SE from a
+weighted \code{lm()} fit is not guaranteed valid the way it would be under
+classical WLS -- an HC-robust SE is arguably the more defensible
+choice in general. But \code{"classical"} is also what this function (and
+published CEM applications more broadly) has always reported, so it
+stays the default for backward compatibility; switch to an HC type if
+you want the more robust alternative, e.g. after checking whether it
+materially changes your reported intervals.}
 }
 \value{
 A list combining the elements of \code{\link[=elicit_and_match]{elicit_and_match()}}'s output
@@ -43,7 +93,5 @@ A list combining the elements of \code{\link[=elicit_and_match]{elicit_and_match
 }
 \description{
 Thin composition of \code{\link[=elicit_and_match]{elicit_and_match()}} and \code{\link[=fit_effect]{fit_effect()}} for a single
-draw. This is the atomic unit reused, unmodified, by \code{\link[=run_M_draws]{run_M_draws()}} and
-by the resampling-based diagnostics (\code{\link[=excess_variance_test]{excess_variance_test()}},
-\code{\link[=existence_test]{existence_test()}}).
+draw. This is the atomic unit reused, unmodified, by \code{\link[=run_M_draws]{run_M_draws()}}.
 }

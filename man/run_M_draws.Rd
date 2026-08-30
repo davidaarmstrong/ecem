@@ -12,7 +12,9 @@ run_M_draws(
   M,
   exact_if_K_leq = NULL,
   estimator = c("regression", "mean_diff"),
-  covariates = NULL
+  covariates = NULL,
+  min_n_per_arm = 1,
+  vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")
 )
 }
 \arguments{
@@ -45,22 +47,76 @@ Details.}
 (i.e. \code{names(matched$kinds)} minus any \code{"excluded"} entries) -- the
 same covariates that entered the matching. Ignored for
 \code{"mean_diff"}.}
+
+\item{min_n_per_arm}{Integer; minimum number of treated and control
+units a stratum needs to be retained. Defaults to \code{1}, i.e. the
+original rule (a stratum survives if it has \emph{any} unit in each arm)
+-- every existing caller is unaffected unless it opts into a larger
+value. Real, unrounded covariates can produce strata with just one or
+two units in one arm, especially once more than one covariate is
+elicited and their bins are crossed; such a stratum still counts as
+"matched" under the default rule, but contributes an extremely
+high-leverage, low-information stratum to whatever's estimated on top
+of it (e.g. \code{\link[=congeniality_test]{congeniality_test()}}'s treatment-by-bin interaction can
+become numerically unidentifiable -- see its documentation). Raising
+\code{min_n_per_arm} trims those thin strata at the source, the same way
+\code{has_treat & has_control} already trims strata with \emph{zero} units in
+an arm -- this is a stricter version of the identical mechanism, not
+a new one. Because the FSATT-ATT/ATT-ATE covariance identities are
+proven for any well-defined 0/1 retention indicator (not specifically
+the \verb{>= 1}-per-arm rule), a larger \code{min_n_per_arm} still targets a
+coherent FSATT -- just a more conditional one, restricted to a
+better-supported region of the covariate space. Applying it
+consistently wherever retention is decided (here, and hence in
+\code{\link[=run_draw]{run_draw()}}, \code{\link[=run_M_draws]{run_M_draws()}}, \code{\link[=congeniality_test]{congeniality_test()}}, and the
+bootstrap-based diagnostics) keeps that FSATT the same one throughout
+a given analysis, rather than letting the point estimate and a
+diagnostic silently disagree about which sample they're each
+describing.}
+
+\item{vcov_type}{\code{"classical"} (the default) for \code{summary.lm()}'s usual
+model-based standard error, or one of \code{"HC4"}, \code{"HC4m"}, \code{"HC3"},
+\code{"HC5"}, \code{"HC1"}, \code{"HC0"} for a heteroskedasticity-consistent ("HCCM"
+/ sandwich) standard error via \code{\link[sandwich:vcovHC]{sandwich::vcovHC()}} instead. Only
+affects \code{var_hat} (and hence any confidence interval or Rubin's-rules
+pooling built on it) -- \code{tau_hat} itself is the same either way, since
+it's the same weighted-least-squares coefficient regardless of which
+variance estimator is applied to it afterward. Ignored for
+\code{"mean_diff"}.
+
+The default is \code{"classical"} rather than matching
+\code{\link[=congeniality_test]{congeniality_test()}}'s HC4 default deliberately: CEM's control
+weights (\code{\link[=cem_weights]{cem_weights()}}) are balancing weights, not weights
+proportional to \code{1 / Var(residual)}, so the model-based SE from a
+weighted \code{lm()} fit is not guaranteed valid the way it would be under
+classical WLS -- an HC-robust SE is arguably the more defensible
+choice in general. But \code{"classical"} is also what this function (and
+published CEM applications more broadly) has always reported, so it
+stays the default for backward compatibility; switch to an HC type if
+you want the more robust alternative, e.g. after checking whether it
+materially changes your reported intervals.}
 }
 \value{
 An object of class \code{"ecem_draws"}: a list of \code{M} (or \code{K})
 per-draw records, as returned by \code{\link[=run_draw]{run_draw()}}, with attributes
 \code{exact} (logical), \code{weights} (numeric, summing to 1), and, when
 exact, \code{regimes} and \code{K}. Also carries \code{treat_var}, \code{outcome_var},
-\code{cutpoint_specs}, \code{estimator}, and \code{covariates} as attributes, so that
-\code{\link[=pooling_diagnostics]{pooling_diagnostics()}}, \code{\link[=existence_test]{existence_test()}} (and, in principle, your
-own code) can recover them from \code{draws} alone rather than having to
-pass them again -- which matters more than it might seem for
-\code{estimator}/\code{covariates}, since the bootstrap-based diagnostics need
-to refit draws the \emph{same} way \code{draws} was originally computed to give
-a meaningful null distribution. Has \code{\link[=print.ecem_draws]{print.ecem_draws()}},
-\code{\link[=summary.ecem_draws]{summary.ecem_draws()}}, and \code{\link[=as.data.frame.ecem_draws]{as.data.frame.ecem_draws()}} methods;
-still usable as a plain list everywhere else in this package (e.g.
-\code{\link[=retention_matrix]{retention_matrix()}}, \code{\link[=pool_draws]{pool_draws()}}).
+\code{cutpoint_specs}, \code{estimator}, \code{covariates}, \code{min_n_per_arm}, and
+\code{vcov_type} as attributes, so that \code{\link[=pooling_diagnostics]{pooling_diagnostics()}},
+\code{\link[=existence_test]{existence_test()}} (and, in principle, your own code) can recover them
+from \code{draws} alone rather than having to pass them again -- which
+matters more than it might seem for \code{estimator}/\code{covariates}/
+\code{min_n_per_arm}, since the bootstrap-based diagnostics need to refit
+draws the \emph{same} way \code{draws} was originally computed to give a
+meaningful null distribution. \code{vcov_type} is the exception: it only
+changes \code{var_hat} (a refit's point estimate \code{tau_hat} is identical
+regardless of \code{vcov_type}), and the bootstrap-based diagnostics never
+read a refit's \code{var_hat} -- so \code{vcov_type} is carried here purely for
+provenance/reproducibility, not because anything downstream recovers
+and reapplies it. Has \code{\link[=print.ecem_draws]{print.ecem_draws()}}, \code{\link[=summary.ecem_draws]{summary.ecem_draws()}},
+and \code{\link[=as.data.frame.ecem_draws]{as.data.frame.ecem_draws()}} methods; still usable as a plain list
+everywhere else in this package (e.g. \code{\link[=retention_matrix]{retention_matrix()}},
+\code{\link[=pool_draws]{pool_draws()}}).
 }
 \description{
 Runs \code{M} Monte Carlo draws via repeated calls to \code{\link[=run_draw]{run_draw()}}, unless
@@ -83,9 +139,8 @@ variance if handed weighted exact draws.
 
 \code{exact_if_K_leq} defaults to \code{NULL}, i.e. always Monte Carlo -- the
 original behavior -- so existing callers are unaffected unless they opt
-in. \code{\link[=excess_variance_test]{excess_variance_test()}} and \code{\link[=existence_test]{existence_test()}} call \code{run_M_draws()}
-internally and summarize it with an unweighted variance; turning
-exactness on for them would also require switching that summary to a
-weighted variance, which this package does not currently do, so those
-two functions do not set \code{exact_if_K_leq}.
+in. It's specific to this function: \code{\link[=existence_test]{existence_test()}}'s own bootstrap
+(via \code{bootstrap_congeniality()}) reruns \code{\link[=elicit_and_match]{elicit_and_match()}}/
+\code{\link[=fit_effect]{fit_effect()}} directly rather than going through \code{run_M_draws()}, so
+\code{exact_if_K_leq} has no effect on it either way.
 }

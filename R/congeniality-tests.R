@@ -35,70 +35,61 @@ flatness_test_XE <- function(data, treat_var, outcome_var, xe_var, xe_range) {
   list(p_value = cmp[["Pr(>F)"]][2], model = fit1, n = nrow(sub))
 }
 
-## Shared bootstrap engine for excess_variance_test() and existence_test().
+## Bootstrap engine behind existence_test(). Resamples rows with
+## replacement, substitutes each draw's own null (tau_hat_m) into the
+## outcome, and reruns all M draws on that resample, recording the
+## resulting per-draw tau under the null. Repeating this traces out each
+## draw's own null distribution of tau.
 ##
-## Both tests resample rows and rerun M matches per replicate, differing
-## only in which null they substitute into the outcome before refitting:
-## excess_variance_test() forces one shared tau_bar onto every draw, while
-## existence_test() forces each draw's own tau_hat_m. elicit_and_match()
-## never looks at the outcome column at all -- only fit_effect() does -- so
-## the M matches formed within a replicate are identical either way, and
-## only the (cheap) effect-fitting step needs rerunning for the second
-## null. This computes both nulls' tau's off the *same* M matches per
-## replicate, instead of matching 2 x n_boot x M times across two separate
-## bootstraps.
+## Previously also drove excess_variance_test() (a second, shared-null
+## bootstrap computing a between-draw null variance B_null) -- removed
+## along with that test, which the paper's Appendix documents as invalid
+## (CEM's discrete matching solution is destabilized by resampling with
+## replacement; see congeniality_test()'s documentation for the citation).
+## Also previously cached by pooling_diagnostics() (run_existence_cache)
+## for existence_test() to reuse -- removed too, since with only one
+## resampling test left there was nothing left to amortize; see
+## pooling_diagnostics()'s documentation for why.
 ##
-## Set compute_shared/compute_own = FALSE (the default when tau_bar/
-## tau_hat_m aren't supplied) to skip the half you don't need -- e.g.
-## excess_variance_test() run standalone has no tau_hat_m to give an own
-## null, and existence_test() run standalone has no tau_bar.
+## Set compute_own = FALSE (the default when tau_hat_m isn't supplied) to
+## skip the bootstrap entirely and just return an empty result.
 ##
-## estimator/covariates are passed straight through to fit_effect() and
-## should match whatever `draws` was actually computed with (callers with a
-## `draws` object recover these from its attributes; see run_M_draws()) --
-## refitting bootstrap replicates with a different estimator than the one
-## that produced the real draws would make B_null/tau_own answer the wrong
-## question.
+## estimator/covariates/min_n_per_arm are passed straight through to
+## elicit_and_match()/fit_effect() and should match whatever `draws` was
+## actually computed with (callers with a `draws` object recover these
+## from its attributes; see run_M_draws()) -- refitting bootstrap
+## replicates with a different estimator, covariate set, or retention
+## threshold than the one that produced the real draws would make tau_own
+## answer the wrong question.
 ##
-## Returns a list with `B_null` (`NULL` if !compute_shared) and `tau_own`
-## (an n_boot x M matrix, `NULL` if !compute_own) -- deliberately left
-## unsummarized, so any stat_fun can be applied to `tau_own` later without
-## rerunning this bootstrap (see existence_test()'s `diagnostics` argument).
+## Returns a list with `tau_own` (an n_boot x M matrix, `NULL` if
+## !compute_own) -- deliberately left unsummarized, so any stat_fun can be
+## applied to it later.
 bootstrap_congeniality <- function(data, treat_var, outcome_var, cutpoint_specs, M,
-                                    tau_bar = NULL, tau_hat_m = NULL, n_boot = 200,
-                                    compute_shared = !is.null(tau_bar),
+                                    tau_hat_m = NULL, n_boot = 200,
                                     compute_own = !is.null(tau_hat_m),
                                     estimator = "regression", covariates = NULL,
+                                    min_n_per_arm = 1,
                                     progress = interactive()) {
   n <- nrow(data)
   D <- data[[treat_var]]
   Y <- data[[outcome_var]]
 
-  Y_null_shared <- if (compute_shared) Y - tau_bar * D else NULL
-  Y_null_own    <- if (compute_own) matrix(Y, nrow = n, ncol = M) - outer(D, tau_hat_m) else NULL
+  Y_null_own <- if (compute_own) matrix(Y, nrow = n, ncol = M) - outer(D, tau_hat_m) else NULL
 
   pb <- if (isTRUE(progress)) utils::txtProgressBar(min = 0, max = n_boot, style = 3) else NULL
   if (!is.null(pb)) on.exit(close(pb), add = TRUE)
 
-  B_null  <- if (compute_shared) numeric(n_boot) else NULL
   tau_own <- if (compute_own) matrix(NA_real_, nrow = n_boot, ncol = M) else NULL
 
   for (b in seq_len(n_boot)) {
     rows      <- sample.int(n, n, replace = TRUE)
     boot_base <- data[rows, , drop = FALSE]
-    Yb_shared <- if (compute_shared) Y_null_shared[rows] else NULL
     Yb_own    <- if (compute_own) Y_null_own[rows, , drop = FALSE] else NULL
 
-    tau_shared_b <- if (compute_shared) numeric(M) else NULL
     for (m in seq_len(M)) {
-      matched_m <- elicit_and_match(boot_base, treat_var, cutpoint_specs)
+      matched_m <- elicit_and_match(boot_base, treat_var, cutpoint_specs, min_n_per_arm = min_n_per_arm)
 
-      if (compute_shared) {
-        boot_data <- boot_base
-        boot_data[[outcome_var]] <- Yb_shared
-        tau_shared_b[m] <- fit_effect(boot_data, treat_var, outcome_var, matched_m,
-                                       estimator = estimator, covariates = covariates)$tau_hat
-      }
       if (compute_own) {
         boot_data <- boot_base
         boot_data[[outcome_var]] <- Yb_own[, m]
@@ -106,24 +97,11 @@ bootstrap_congeniality <- function(data, treat_var, outcome_var, cutpoint_specs,
                                      estimator = estimator, covariates = covariates)$tau_hat
       }
     }
-    if (compute_shared) B_null[b] <- stats::var(tau_shared_b, na.rm = TRUE)
 
     if (!is.null(pb)) utils::setTxtProgressBar(pb, b)
   }
 
-  list(B_null = B_null, tau_own = tau_own)
-}
-
-## Excess-variance test's p_value/ratio from a B_null distribution --
-## shared by excess_variance_test() (standalone) and pooling_diagnostics()
-## (which computes B_null itself via the combined bootstrap above, so it
-## can also cache tau_own for existence_test() to reuse).
-excess_variance_from_B_null <- function(B_null, B_obs) {
-  list(
-    p_value     = mean(B_null >= B_obs, na.rm = TRUE),
-    ratio       = B_obs / stats::median(B_null, na.rm = TRUE),
-    B_null_dist = B_null
-  )
+  list(tau_own = tau_own)
 }
 
 #' Congeniality test: does FSATT drift within the elicited range?
@@ -135,7 +113,7 @@ excess_variance_from_B_null <- function(B_null, B_obs) {
 #' (run before any coarsening is applied, on the full retained-eligible
 #' sample).
 #'
-#' This supersedes [excess_variance_test()], the earlier, resampling-based
+#' This supersedes an earlier, resampling-based excess-variance-bootstrap
 #' design the paper's Appendix documents as invalid -- CEM's discrete
 #' matching solution is destabilized by resampling with replacement
 #' (Abadie & Imbens 2008's bootstrap-inconsistency result for matching
@@ -189,15 +167,49 @@ excess_variance_from_B_null <- function(B_null, B_obs) {
 #' @param fixed_cutpoints Optional named list, one entry per elicited
 #'   covariate, of explicit numeric cutpoint vectors to use instead of
 #'   deriving them from `position`.
+#' @param min_n_per_arm Integer, default `1`; passed straight through to
+#'   [elicit_and_match()] -- see its documentation for the full rationale.
+#'   Raising this is the more targeted fix for the same numerically
+#'   unstable-leverage problem `vcov_type` addresses when a treatment-by-
+#'   bin cell is a near-singleton: it removes the offending cell from the
+#'   matched sample entirely (a common-support restriction) rather than
+#'   asking a different sandwich correction to cope with it. If you also
+#'   want the headline point estimate (from [run_M_draws()]) to describe
+#'   the *same* sample this test does, pass the same `min_n_per_arm` to
+#'   both rather than only here.
+#' @param vcov_type `"HC4"` (default), `"HC4m"`, `"HC3"`, `"HC5"`,
+#'   `"HC1"`, or `"HC0"` -- which heteroskedasticity-consistent sandwich
+#'   correction [sandwich::vcovHC()] applies. HC4 is the validated default
+#'   (see the paper's Appendix for the comparison against HC1/HC3/HC4m/HC5
+#'   that led to it), clean across every simulated condition checked. On
+#'   real, unrounded data, though, a treatment-by-bin cell can end up with
+#'   only one or two units -- rare, but common enough in application-sized
+#'   samples -- pushing that observation's leverage (its hat value) close
+#'   to, or exactly at, 1. HC4's correction divides by `(1 - h_i)^delta_i`
+#'   for each observation, which is numerically unstable (and undefined at
+#'   `h_i = 1`) regardless of the `delta_i` leverage-adaptivity cap --
+#'   `sandwich::vcovHC()` warns exactly when this happens
+#'   ("HC4 covariances are numerically unstable for hat values close to
+#'   1..."). HC4m (Cribari-Neto & Souza-Vasconcellos, 2007) was
+#'   developed specifically to stay bounded in this regime and is the
+#'   principled thing to switch to if you see that warning on your own
+#'   data, rather than a workaround -- it's already part of the same
+#'   HC1/HC3/HC4/HC4m/HC5 family comparison the paper's appendix reports.
+#'   Worth also just looking at which bin those high-leverage observations
+#'   fall into (e.g. `hatvalues(cg$model)`) -- a near-singleton
+#'   treatment-by-bin cell is itself worth knowing about independent of
+#'   which correction handles it numerically.
 #'
-#' @return A list with elements `p_value` (from the HC4-robust Wald
-#'   F-test; `NA` if the matched sample is empty or too small to identify
-#'   the interaction model -- the same graceful-failure convention
-#'   [fit_effect()] uses for an aliased coefficient, rather than
-#'   erroring), `model` (the fitted interaction model), `n` (matched
+#' @return A list with elements `p_value` (from the `vcov_type`-robust
+#'   Wald F-test; `NA` if the matched sample is empty or too small to
+#'   identify the interaction model -- the same graceful-failure
+#'   convention [fit_effect()] uses for an aliased coefficient, rather
+#'   than erroring), `model` (the fitted interaction model), `n` (matched
 #'   sample size), `n_bins` (levels of the joint bin factor tested),
 #'   `elicited_vars` (which covariates were tested), `fixed_cutpoints`
-#'   (the cutpoints actually used, named by covariate), and `position`.
+#'   (the cutpoints actually used, named by covariate), `position`,
+#'   `vcov_type` (which correction was actually used), and
+#'   `min_n_per_arm` (the retention threshold actually used).
 #'
 #' @examples
 #' \donttest{
@@ -211,13 +223,16 @@ excess_variance_from_B_null <- function(B_null, B_obs) {
 #' @export
 congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
                                position = c("mid", "low", "high"),
-                               fixed_cutpoints = NULL) {
+                               fixed_cutpoints = NULL,
+                               min_n_per_arm = 1,
+                               vcov_type = c("HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")) {
   if (!requireNamespace("sandwich", quietly = TRUE) || !requireNamespace("lmtest", quietly = TRUE)) {
     stop("congeniality_test() requires the 'sandwich' and 'lmtest' packages ",
          "(both Imports of ecem; install via install.packages(c('sandwich','lmtest')) ",
          "if somehow missing).")
   }
-  position <- match.arg(position)
+  position  <- match.arg(position)
+  vcov_type <- match.arg(vcov_type)
 
   var_names   <- names(cutpoint_specs)
   is_regime   <- vapply(cutpoint_specs, inherits, logical(1), what = "cem_regime_spec")
@@ -255,11 +270,12 @@ congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
     fixed_specs[[v]]   <- cuts
   }
 
-  matched <- elicit_and_match(data, treat_var, fixed_specs)
+  matched <- elicit_and_match(data, treat_var, fixed_specs, min_n_per_arm = min_n_per_arm)
 
   if (length(matched$retained_idx) == 0) {
     return(list(p_value = NA_real_, model = NULL, n = 0, n_bins = NA_integer_,
-                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position,
+                vcov_type = vcov_type, min_n_per_arm = min_n_per_arm))
   }
 
   sub <- data[matched$retained_idx, , drop = FALSE]
@@ -289,7 +305,8 @@ congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
   sub$.bin <- droplevels(sub$.bin)
   if (nlevels(sub$.bin) < 2) {
     return(list(p_value = NA_real_, model = NULL, n = nrow(sub), n_bins = nlevels(sub$.bin),
-                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position,
+                vcov_type = vcov_type, min_n_per_arm = min_n_per_arm))
   }
 
   w <- cem_weights(sub[[treat_var]], matched$stratum)
@@ -319,11 +336,12 @@ congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
   df_resid_ok <- stats::df.residual(fit1) > 0
   if (!rank_ok || !df_resid_ok) {
     return(list(p_value = NA_real_, model = fit1, n = nrow(sub), n_bins = nlevels(sub$.bin),
-                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position))
+                elicited_vars = elicited_vars, fixed_cutpoints = resolved_cuts, position = position,
+                vcov_type = vcov_type, min_n_per_arm = min_n_per_arm))
   }
 
   wt <- tryCatch(
-    lmtest::waldtest(fit0, fit1, vcov = function(x) sandwich::vcovHC(x, type = "HC4"), test = "F"),
+    lmtest::waldtest(fit0, fit1, vcov = function(x) sandwich::vcovHC(x, type = vcov_type), test = "F"),
     error = function(e) NULL
   )
   p_value <- if (is.null(wt)) NA_real_ else wt[["Pr(>F)"]][2]
@@ -335,97 +353,20 @@ congeniality_test <- function(data, treat_var, outcome_var, cutpoint_specs,
     n_bins          = nlevels(sub$.bin),
     elicited_vars   = elicited_vars,
     fixed_cutpoints = resolved_cuts,
-    position        = position
+    position        = position,
+    vcov_type       = vcov_type,
+    min_n_per_arm   = min_n_per_arm
   )
-}
-
-#' Excess-variance bootstrap test on the realized draws
-#'
-#' **Superseded by [congeniality_test()]** -- kept here, off by default in
-#' [pooling_diagnostics()], only for reproducing this earlier design or
-#' comparing against it directly; it is no longer part of the recommended
-#' workflow (see the paper's Appendix for why: CEM's discrete matching
-#' solution is destabilized by resampling with replacement, which made
-#' this test's power near zero regardless of true heterogeneity).
-#'
-#' Tests whether the observed between-draw variance `B` exceeds what
-#' sampling noise alone predicts, computed directly on the realized draws
-#' (as opposed to [flatness_test_XE()], which is a proxy computed on the
-#' full retained sample before matching). Forces the null
-#' \eqn{FSATT_1 = \dots = FSATT_M} onto the data by substituting the pooled
-#' `tau_bar` for every unit's draw-specific contribution
-#' (\eqn{Y^* = Y - \bar\tau D}), resamples rows with replacement, reruns
-#' all `M` draws on that same resample, and records the resulting
-#' between-draw variance `B*`. Repeating this traces out `B`'s null
-#' distribution under exact congeniality -- correlation across draws is
-#' preserved, since the resample is shared across all draws within a given
-#' replicate -- without ever estimating or inverting a covariance matrix.
-#'
-#' @inheritParams run_draw
-#' @param M Integer; number of draws to rerun within each bootstrap
-#'   replicate (should match the `M` used to compute `B_obs`).
-#' @param tau_bar The pooled point estimate from [pool_rubins_rules()] or
-#'   [pool_draws()].
-#' @param B_obs The observed between-draw variance from the same pooling
-#'   call.
-#' @param n_boot Integer; number of bootstrap replicates. Kept small in
-#'   examples for speed; use at least a few hundred for actual inference.
-#' @param estimator,covariates Passed straight through to [fit_effect()]
-#'   for every refit inside the bootstrap. Should match whatever `draws`
-#'   (or whatever produced `tau_bar`/`B_obs`) was actually computed with --
-#'   refitting under a different estimator than the real draws used would
-#'   make this test answer a different question than the one its `B_obs`
-#'   was computed for. If you have a `draws` object, prefer calling this
-#'   indirectly through [pooling_diagnostics()], which recovers these from
-#'   `draws`'s attributes automatically rather than requiring you to repeat
-#'   them here.
-#' @param progress Logical; show a text progress bar over the `n_boot`
-#'   bootstrap replicates (each of which reruns all `M` draws). Defaults to
-#'   `interactive()`, so it stays quiet in scripts, `R CMD check`, and
-#'   `testthat` runs. Written to `stderr()` via [utils::txtProgressBar()],
-#'   so it never interferes with captured `stdout` output.
-#'
-#' @return A list with elements `p_value`, `ratio` (`B_obs` divided by the
-#'   median of the null distribution), and `B_null_dist` (the full vector
-#'   of bootstrapped `B*` values).
-#'
-#' @examples
-#' \donttest{
-#' set.seed(1)
-#' pop <- simulate_population(N = 500)
-#' specs <- list(age = list(c(25, 33), c(60, 68)), educ = c(12, 16))
-#' draws <- run_M_draws(pop, "D", "Y", specs, M = 10)
-#' pooled <- pool_rubins_rules(draws)
-#' excess_variance_test(pop, "D", "Y", specs, M = 10,
-#'                       tau_bar = pooled$tau_bar, B_obs = pooled$B,
-#'                       n_boot = 20)
-#' }
-#'
-#' @export
-excess_variance_test <- function(data, treat_var, outcome_var, cutpoint_specs,
-                                  M, tau_bar, B_obs, n_boot = 200,
-                                  estimator = c("regression", "mean_diff"), covariates = NULL,
-                                  progress = interactive()) {
-  estimator <- match.arg(estimator)
-  boot <- bootstrap_congeniality(
-    data, treat_var, outcome_var, cutpoint_specs, M,
-    tau_bar = tau_bar, n_boot = n_boot,
-    estimator = estimator, covariates = covariates,
-    progress = progress
-  )
-  excess_variance_from_B_null(boot$B_null, B_obs)
 }
 
 #' Simonsohn-style existence test
 #'
 #' A fallback for when [congeniality_test()] rejects and pooling via
 #' Rubin's rules is no longer trusted. For each draw `m` separately, forces
-#' that draw's *own* null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}) --
-#' deliberately different from [excess_variance_test()], which forces one
-#' shared null across all draws. Resamples rows once per replicate (the
-#' same resampled rows used for every draw within that replicate) and
-#' reruns the full pipeline for each draw on its own null-consistent,
-#' resampled outcome.
+#' that draw's *own* null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}).
+#' Resamples rows once per replicate (the same resampled rows used for
+#' every draw within that replicate) and reruns the full pipeline for each
+#' draw on its own null-consistent, resampled outcome.
 #'
 #' `treat_var`, `outcome_var`, and `cutpoint_specs` are recovered from
 #' `draws`'s attributes by default (see [run_M_draws()]), and each draw's
@@ -433,59 +374,45 @@ excess_variance_test <- function(data, treat_var, outcome_var, cutpoint_specs,
 #' `existence_test(data, draws)`. Pass any of the three explicitly to
 #' override, or if `draws` doesn't carry them.
 #'
-#' If you already ran [pooling_diagnostics()] on this `draws` (e.g. because
-#' its congeniality test rejected and this is the recommended fallback),
-#' pass that result as `diagnostics` (with `run_existence_cache = TRUE`,
-#' the default) to reuse its bootstrap instead of rerunning one from
-#' scratch -- matching doesn't depend on the outcome at all, so the
-#' matches it already did can be refit under this test's own-draw null for
-#' free instead of matching a second time. This turns `existence_test()`
-#' from another `n_boot`-replicate bootstrap into an essentially instant
-#' lookup.
+#' Each call bootstraps fresh (`n_boot` replicates, each rerunning all `M`
+#' draws) -- there is nothing to precompute or reuse from
+#' [pooling_diagnostics()], which does not itself resample (see its
+#' documentation for why).
 #'
 #' @param data A data frame, the same one used to produce `draws`. Needed
 #'   again here because the test reruns the full pipeline on resampled
-#'   data redrawn from `cutpoint_specs` -- unless `diagnostics` is
-#'   supplied, in which case its cached bootstrap is used instead and
-#'   `data` is not touched.
+#'   data redrawn from `cutpoint_specs`.
 #' @param draws An object of class `"ecem_draws"`, as returned by
 #'   [run_M_draws()].
 #' @param treat_var,outcome_var,cutpoint_specs `NULL` (the default) to
 #'   recover these from `draws`'s attributes; supply them explicitly to
-#'   override, or if `draws` doesn't carry them. Ignored if `diagnostics`
-#'   is supplied.
+#'   override, or if `draws` doesn't carry them.
 #' @param estimator,covariates `NULL` (the default) to recover these from
 #'   `draws`'s attributes too (see [run_M_draws()]), so the bootstrap
-#'   refits draws the same way `draws` was actually computed. Ignored if
-#'   `diagnostics` is supplied (the cached bootstrap was already computed
-#'   consistently with `draws` when [pooling_diagnostics()] made it).
-#' @param diagnostics `NULL` (the default) to bootstrap fresh, or the
-#'   result of [pooling_diagnostics(data, draws)][pooling_diagnostics()] to
-#'   reuse its cached bootstrap (see Details). Must have been run on this
-#'   same `draws` -- checked by comparing cached and current `tau_hat`
-#'   values.
+#'   refits draws the same way `draws` was actually computed.
+#' @param min_n_per_arm `NULL` (the default) to recover this from `draws`'s
+#'   `"min_n_per_arm"` attribute too (falling back to `1`, i.e. CEM's usual
+#'   any-unit-per-arm retention rule, if `draws` doesn't carry one -- e.g.
+#'   older cached `draws` objects predating this parameter), so the
+#'   bootstrap prunes matched strata the same way `draws` was actually
+#'   computed.
 #' @param n_boot Integer; number of bootstrap replicates. Kept small in
 #'   examples for speed; use at least a few hundred for actual inference.
-#'   Ignored if `diagnostics` is supplied (its `n_boot` is used instead).
 #' @param stat_fun Summary statistic applied to the draws' `tau_hat`
 #'   values, both observed and under each bootstrap replicate's null.
-#'   Defaults to [stats::median()]. Can be freely changed even when reusing
-#'   a cached bootstrap via `diagnostics`, since the cache stores each
-#'   replicate's raw per-draw `tau_hat`s, unsummarized.
+#'   Defaults to [stats::median()].
 #' @param progress Logical; show a text progress bar over the `n_boot`
 #'   bootstrap replicates (each of which reruns all `M` draws, one per
 #'   draw's own null). Defaults to `interactive()`, so it stays quiet in
 #'   scripts, `R CMD check`, and `testthat` runs. Written to `stderr()` via
 #'   [utils::txtProgressBar()], so it never interferes with captured
-#'   `stdout` output. Ignored if `diagnostics` is supplied (nothing to
-#'   show progress on).
+#'   `stdout` output.
 #'
 #' @return An object of class `"ecem_existence_test"` (see
 #'   [print.ecem_existence_test()]): a list with elements `observed_stat`,
 #'   `p_value`, `null_stats` (the full vector of the statistic under the
-#'   null), `M` (number of draws), `n_boot`, `stat_label` (a short
-#'   description of `stat_fun`, for printing), and `reused_bootstrap`
-#'   (logical, whether `diagnostics`'s cached bootstrap was used).
+#'   null), `M` (number of draws), `n_boot`, and `stat_label` (a short
+#'   description of `stat_fun`, for printing).
 #'
 #' @examples
 #' \donttest{
@@ -494,16 +421,12 @@ excess_variance_test <- function(data, treat_var, outcome_var, cutpoint_specs,
 #' specs <- list(age = list(c(25, 33), c(60, 68)), educ = c(12, 16))
 #' draws <- run_M_draws(pop, "D", "Y", specs, M = 10)
 #' existence_test(pop, draws, n_boot = 20)
-#'
-#' ## Reusing an already-run pooling_diagnostics() bootstrap instead:
-#' diag <- pooling_diagnostics(pop, draws, n_boot = 20)
-#' existence_test(pop, draws, diagnostics = diag)
 #' }
 #'
 #' @export
 existence_test <- function(data, draws, treat_var = NULL, outcome_var = NULL,
                             cutpoint_specs = NULL, estimator = NULL, covariates = NULL,
-                            diagnostics = NULL,
+                            min_n_per_arm = NULL,
                             n_boot = 200, stat_fun = stats::median,
                             progress = interactive()) {
   stat_label <- deparse(substitute(stat_fun))
@@ -521,67 +444,45 @@ existence_test <- function(data, draws, treat_var = NULL, outcome_var = NULL,
   M <- length(tau_hat_m)
   observed_stat <- stat_fun(tau_hat_m, na.rm = TRUE)
 
-  if (!is.null(diagnostics)) {
-    if (!inherits(diagnostics, "ecem_pooling_diagnostics") || is.null(diagnostics$existence_boot)) {
-      stop(
-        "`diagnostics` must be the result of pooling_diagnostics() run on ",
-        "this same `draws` (so it has a cached $existence_boot to reuse)."
-      )
-    }
-    cached <- diagnostics$existence_boot
-    if (!identical(cached$tau_hat_m, tau_hat_m)) {
-      stop(
-        "`diagnostics`'s cached bootstrap was computed from a different set ",
-        "of draws (its tau_hat values don't match `draws`'s) -- rerun ",
-        "pooling_diagnostics() on this `draws`, or omit `diagnostics` to let ",
-        "existence_test() bootstrap fresh."
-      )
-    }
+  if (is.null(treat_var))      treat_var      <- attr(draws, "treat_var")
+  if (is.null(outcome_var))    outcome_var    <- attr(draws, "outcome_var")
+  if (is.null(cutpoint_specs)) cutpoint_specs <- attr(draws, "cutpoint_specs")
 
-    null_stats <- apply(cached$tau_own, 1, stat_fun, na.rm = TRUE)
-    n_boot <- cached$n_boot
-    reused_bootstrap <- TRUE
-
-  } else {
-    if (is.null(treat_var))      treat_var      <- attr(draws, "treat_var")
-    if (is.null(outcome_var))    outcome_var    <- attr(draws, "outcome_var")
-    if (is.null(cutpoint_specs)) cutpoint_specs <- attr(draws, "cutpoint_specs")
-
-    if (is.null(treat_var) || is.null(outcome_var) || is.null(cutpoint_specs)) {
-      stop(
-        "treat_var, outcome_var, and cutpoint_specs could not all be recovered ",
-        "from `draws`. This happens if `draws` didn't come from run_M_draws() ",
-        "-- pass whichever of treat_var/outcome_var/cutpoint_specs is missing ",
-        "explicitly."
-      )
-    }
-
-    ## estimator has no NULL-means-"missing" ambiguity to guard against the
-    ## way treat_var/outcome_var/cutpoint_specs do -- draws predating this
-    ## attribute (there shouldn't be any outside development) fall back to
-    ## the current default rather than erroring.
-    if (is.null(estimator))  estimator  <- attr(draws, "estimator")
-    if (is.null(estimator))  estimator  <- "regression"
-    if (is.null(covariates)) covariates <- attr(draws, "covariates")
-
-    boot <- bootstrap_congeniality(
-      data, treat_var, outcome_var, cutpoint_specs, M,
-      tau_hat_m = tau_hat_m, n_boot = n_boot,
-      estimator = estimator, covariates = covariates,
-      progress = progress
+  if (is.null(treat_var) || is.null(outcome_var) || is.null(cutpoint_specs)) {
+    stop(
+      "treat_var, outcome_var, and cutpoint_specs could not all be recovered ",
+      "from `draws`. This happens if `draws` didn't come from run_M_draws() ",
+      "-- pass whichever of treat_var/outcome_var/cutpoint_specs is missing ",
+      "explicitly."
     )
-    null_stats <- apply(boot$tau_own, 1, stat_fun, na.rm = TRUE)
-    reused_bootstrap <- FALSE
   }
 
+  ## estimator has no NULL-means-"missing" ambiguity to guard against the
+  ## way treat_var/outcome_var/cutpoint_specs do -- draws predating this
+  ## attribute (there shouldn't be any outside development) fall back to
+  ## the current default rather than erroring.
+  if (is.null(estimator))  estimator  <- attr(draws, "estimator")
+  if (is.null(estimator))  estimator  <- "regression"
+  if (is.null(covariates)) covariates <- attr(draws, "covariates")
+  if (is.null(min_n_per_arm)) min_n_per_arm <- attr(draws, "min_n_per_arm")
+  if (is.null(min_n_per_arm)) min_n_per_arm <- 1
+
+  boot <- bootstrap_congeniality(
+    data, treat_var, outcome_var, cutpoint_specs, M,
+    tau_hat_m = tau_hat_m, n_boot = n_boot,
+    estimator = estimator, covariates = covariates,
+    min_n_per_arm = min_n_per_arm,
+    progress = progress
+  )
+  null_stats <- apply(boot$tau_own, 1, stat_fun, na.rm = TRUE)
+
   out <- list(
-    observed_stat    = observed_stat,
-    p_value          = mean(abs(null_stats) >= abs(observed_stat), na.rm = TRUE),
-    null_stats       = null_stats,
-    M                = M,
-    n_boot           = n_boot,
-    stat_label       = stat_label,
-    reused_bootstrap = reused_bootstrap
+    observed_stat = observed_stat,
+    p_value       = mean(abs(null_stats) >= abs(observed_stat), na.rm = TRUE),
+    null_stats    = null_stats,
+    M             = M,
+    n_boot        = n_boot,
+    stat_label    = stat_label
   )
   class(out) <- "ecem_existence_test"
   out

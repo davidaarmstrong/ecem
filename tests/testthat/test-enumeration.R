@@ -37,6 +37,50 @@ test_that("enumerate_configs produces K specs with weights summing to 1", {
   expect_equal(sum(enum$weights), 1)
 })
 
+test_that("count_achievable_configs(count_only = TRUE) matches the materialized count", {
+  data <- make_toy_data()
+  info_full  <- count_achievable_configs(data, list(x = c(7)))                # fixed only
+  info_count <- count_achievable_configs(data, list(x = c(7)), count_only = TRUE)
+  expect_equal(info_count$K, info_full$K)
+  expect_null(info_count$per_variable)   # only $K/$counts_by_variable, no materialized configs
+})
+
+test_that("count_achievable_configs(count_only = TRUE) matches across covariates and multiple ranges", {
+  data <- data.frame(x = c(1, 5, 10), y = c(1, 5, 10))
+  specs <- list(x = list(c(0, 12), c(0, 3)), y = list(c(0, 12)))
+  info_full  <- count_achievable_configs(data, specs)
+  info_count <- count_achievable_configs(data, specs, count_only = TRUE)
+  expect_equal(info_count$K, info_full$K)
+  expect_equal(unname(info_count$counts_by_variable), unname(info_full$counts_by_variable))
+})
+
+test_that("count_achievable_configs(count_only = TRUE) sums (not multiplies) across a regime()'s own arms", {
+  data <- make_toy_data()
+  specs <- list(
+    x = regime(
+      low  = list(c(5, 6)),   # 1 achievable gap
+      high = list(c(8, 9))    # 1 achievable gap
+    )
+  )
+  info_full  <- count_achievable_configs(data, specs)
+  info_count <- count_achievable_configs(data, specs, count_only = TRUE)
+  expect_equal(info_full$K, 2L)      # 1 + 1, not 1 * 1 -- see test-regime.R
+  expect_equal(info_count$K, 2)
+})
+
+test_that("run_M_draws(exact_if_K_leq =) falls back to Monte Carlo without materializing configs when K is too large", {
+  ## A stand-in for the real-world case that motivated count_only: K here
+  ## is small enough to actually check quickly in a test, but the point is
+  ## the *code path* -- run_M_draws() must not materialize the full
+  ## achievable-config list just to compare K against exact_if_K_leq when
+  ## the comparison is going to fail anyway.
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 20)))   # K = 9 (see the recovers-attributes test elsewhere)
+  draws <- run_M_draws(data, "D", "Y", specs, M = 5, exact_if_K_leq = 1)
+  expect_false(attr(draws, "exact"))
+  expect_length(draws, 5)
+})
+
 test_that("run_enumerated_draws / pool_rubins_rules_exact recovers the known ATT", {
   data <- make_toy_data()
   ## No observed x values fall in (5, 10), so there is exactly one

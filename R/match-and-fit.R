@@ -14,6 +14,31 @@
 #' @param cutpoint_specs A named list, one entry per covariate to include
 #'   in the matching, in the format described in
 #'   [draw_cutpoints_for_var()].
+#' @param min_n_per_arm Integer; minimum number of treated and control
+#'   units a stratum needs to be retained. Defaults to `1`, i.e. the
+#'   original rule (a stratum survives if it has *any* unit in each arm)
+#'   -- every existing caller is unaffected unless it opts into a larger
+#'   value. Real, unrounded covariates can produce strata with just one or
+#'   two units in one arm, especially once more than one covariate is
+#'   elicited and their bins are crossed; such a stratum still counts as
+#'   "matched" under the default rule, but contributes an extremely
+#'   high-leverage, low-information stratum to whatever's estimated on top
+#'   of it (e.g. [congeniality_test()]'s treatment-by-bin interaction can
+#'   become numerically unidentifiable -- see its documentation). Raising
+#'   `min_n_per_arm` trims those thin strata at the source, the same way
+#'   `has_treat & has_control` already trims strata with *zero* units in
+#'   an arm -- this is a stricter version of the identical mechanism, not
+#'   a new one. Because the FSATT-ATT/ATT-ATE covariance identities are
+#'   proven for any well-defined 0/1 retention indicator (not specifically
+#'   the `>= 1`-per-arm rule), a larger `min_n_per_arm` still targets a
+#'   coherent FSATT -- just a more conditional one, restricted to a
+#'   better-supported region of the covariate space. Applying it
+#'   consistently wherever retention is decided (here, and hence in
+#'   [run_draw()], [run_M_draws()], [congeniality_test()], and the
+#'   bootstrap-based diagnostics) keeps that FSATT the same one throughout
+#'   a given analysis, rather than letting the point estimate and a
+#'   diagnostic silently disagree about which sample they're each
+#'   describing.
 #'
 #' @return A list with elements: `retained_idx` (row indices of `data`
 #'   retained after pruning), `stratum` (a factor giving each retained
@@ -25,7 +50,7 @@
 #'   theory each one used).
 #'
 #' @export
-elicit_and_match <- function(data, treat_var, cutpoint_specs) {
+elicit_and_match <- function(data, treat_var, cutpoint_specs, min_n_per_arm = 1) {
   var_names <- names(cutpoint_specs)
   stopifnot(all(var_names %in% names(data)), treat_var %in% names(data))
 
@@ -47,9 +72,9 @@ elicit_and_match <- function(data, treat_var, cutpoint_specs) {
   }
 
   D <- data[[treat_var]]
-  has_treat   <- tapply(D, strata, function(d) any(d == 1))
-  has_control <- tapply(D, strata, function(d) any(d == 0))
-  keep_levels <- levels(strata)[has_treat & has_control]
+  n_treat   <- tapply(D, strata, function(d) sum(d == 1))
+  n_control <- tapply(D, strata, function(d) sum(d == 0))
+  keep_levels <- levels(strata)[n_treat >= min_n_per_arm & n_control >= min_n_per_arm]
 
   retained <- which(strata %in% keep_levels)
 
@@ -102,11 +127,11 @@ cem_weights <- function(D, strat) {
 #'   CEM literature itself recommends (Iacus, King & Porro 2011/2012,
 #'   building on Ho, Imai, King & Stuart's (2007) matching-as-
 #'   nonparametric-preprocessing rationale). `tau_hat`/`var_hat` are `treat_var`'s
-#'   coefficient and squared standard error. Unlike `"mean_diff"`, this can
-#'   adjust for covariates' *uncoarsened* values, mopping up residual
-#'   imbalance that coarsening-into-bins leaves behind -- at the cost of
-#'   the usual regression caveats (functional-form assumptions on
-#'   `covariates`, classical rather than robust standard errors here).
+#'   coefficient and squared standard error (the latter's estimator
+#'   controlled by `vcov_type`). Unlike `"mean_diff"`, this can adjust for
+#'   covariates' *uncoarsened* values, mopping up residual imbalance that
+#'   coarsening-into-bins leaves behind -- at the cost of the usual
+#'   regression caveats (functional-form assumptions on `covariates`).
 #' - `"mean_diff"`: a treated-count-weighted stratum mean-difference (no
 #'   regression, no covariate adjustment beyond the matching strata
 #'   themselves) -- simpler and always well-defined, but forgoes the
@@ -132,6 +157,27 @@ cem_weights <- function(D, strat) {
 #'   (i.e. `names(matched$kinds)` minus any `"excluded"` entries) -- the
 #'   same covariates that entered the matching. Ignored for
 #'   `"mean_diff"`.
+#' @param vcov_type `"classical"` (the default) for `summary.lm()`'s usual
+#'   model-based standard error, or one of `"HC4"`, `"HC4m"`, `"HC3"`,
+#'   `"HC5"`, `"HC1"`, `"HC0"` for a heteroskedasticity-consistent ("HCCM"
+#'   / sandwich) standard error via [sandwich::vcovHC()] instead. Only
+#'   affects `var_hat` (and hence any confidence interval or Rubin's-rules
+#'   pooling built on it) -- `tau_hat` itself is the same either way, since
+#'   it's the same weighted-least-squares coefficient regardless of which
+#'   variance estimator is applied to it afterward. Ignored for
+#'   `"mean_diff"`.
+#'
+#'   The default is `"classical"` rather than matching
+#'   [congeniality_test()]'s HC4 default deliberately: CEM's control
+#'   weights ([cem_weights()]) are balancing weights, not weights
+#'   proportional to `1 / Var(residual)`, so the model-based SE from a
+#'   weighted `lm()` fit is not guaranteed valid the way it would be under
+#'   classical WLS -- an HC-robust SE is arguably the more defensible
+#'   choice in general. But `"classical"` is also what this function (and
+#'   published CEM applications more broadly) has always reported, so it
+#'   stays the default for backward compatibility; switch to an HC type if
+#'   you want the more robust alternative, e.g. after checking whether it
+#'   materially changes your reported intervals.
 #'
 #' @return A list with elements: `tau_hat` (the within-draw effect
 #'   estimate), `var_hat` (its estimated sampling variance), `n_used`
@@ -143,8 +189,10 @@ cem_weights <- function(D, strat) {
 #'
 #' @export
 fit_effect <- function(data, treat_var, outcome_var, matched,
-                        estimator = c("regression", "mean_diff"), covariates = NULL) {
+                        estimator = c("regression", "mean_diff"), covariates = NULL,
+                        vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")) {
   estimator <- match.arg(estimator)
+  vcov_type <- match.arg(vcov_type)
 
   idx   <- matched$retained_idx
   D     <- data[[treat_var]][idx]
@@ -190,23 +238,40 @@ fit_effect <- function(data, treat_var, outcome_var, matched,
       if (length(covariates) > 0) paste("+", paste(covariates, collapse = " + ")) else ""
     ))
     reg_fit <- stats::lm(form, data = reg_data, weights = cw)
-    ## Only the Estimate/Std. Error columns are ever read below -- never
-    ## the F-statistic or R^2 that summary.lm()'s "essentially perfect fit:
-    ## summary may be unreliable" warning is actually about. That warning
-    ## fires whenever the residual sum of squares is tiny relative to the
-    ## fitted sum of squares, which a small or bootstrap-resampled matched
-    ## sample can trigger completely legitimately (e.g. a resample that
-    ## happens to duplicate rows within a stratum) without the coefficient
-    ## estimate or its SE being wrong. Muffle only this specific message so
-    ## any other warning summary() might throw still propagates normally.
-    co <- withCallingHandlers(
-      summary(reg_fit)$coefficients,
-      warning = function(w) {
-        if (grepl("essentially perfect fit", conditionMessage(w), fixed = TRUE)) {
-          invokeRestart("muffleWarning")
+
+    if (vcov_type == "classical") {
+      ## Only the Estimate/Std. Error columns are ever read below -- never
+      ## the F-statistic or R^2 that summary.lm()'s "essentially perfect fit:
+      ## summary may be unreliable" warning is actually about. That warning
+      ## fires whenever the residual sum of squares is tiny relative to the
+      ## fitted sum of squares, which a small or bootstrap-resampled matched
+      ## sample can trigger completely legitimately (e.g. a resample that
+      ## happens to duplicate rows within a stratum) without the coefficient
+      ## estimate or its SE being wrong. Muffle only this specific message so
+      ## any other warning summary() might throw still propagates normally.
+      co <- withCallingHandlers(
+        summary(reg_fit)$coefficients,
+        warning = function(w) {
+          if (grepl("essentially perfect fit", conditionMessage(w), fixed = TRUE)) {
+            invokeRestart("muffleWarning")
+          }
         }
+      )
+    } else {
+      if (!requireNamespace("sandwich", quietly = TRUE) || !requireNamespace("lmtest", quietly = TRUE)) {
+        stop("fit_effect() requires the 'sandwich' and 'lmtest' packages for ",
+             "vcov_type != \"classical\" (both Imports of ecem; install via ",
+             "install.packages(c('sandwich','lmtest')) if somehow missing).")
       }
-    )
+      ## Unlike the classical branch, lmtest::coeftest() never calls
+      ## summary.lm() and so never throws its "essentially perfect fit"
+      ## warning -- nothing to muffle here. sandwich::vcovHC()'s own
+      ## "numerically unstable" warning (thrown when a hat value is at or
+      ## near 1, e.g. a singleton treatment-by-stratum cell) is left to
+      ## propagate, same as in congeniality_test(): it's telling you
+      ## something real about this matched sample, not a false alarm.
+      co <- lmtest::coeftest(reg_fit, vcov = sandwich::vcovHC(reg_fit, type = vcov_type))
+    }
 
     if (treat_var %in% rownames(co) && is.finite(co[treat_var, "Estimate"])) {
       tau_hat <- unname(co[treat_var, "Estimate"])
@@ -233,9 +298,7 @@ fit_effect <- function(data, treat_var, outcome_var, matched,
 #' Run one draw: elicit, match, and estimate
 #'
 #' Thin composition of [elicit_and_match()] and [fit_effect()] for a single
-#' draw. This is the atomic unit reused, unmodified, by [run_M_draws()] and
-#' by the resampling-based diagnostics ([excess_variance_test()],
-#' [existence_test()]).
+#' draw. This is the atomic unit reused, unmodified, by [run_M_draws()].
 #'
 #' @inheritParams elicit_and_match
 #' @param outcome_var Character; name of the outcome column in `data`.
@@ -247,10 +310,14 @@ fit_effect <- function(data, treat_var, outcome_var, matched,
 #'
 #' @export
 run_draw <- function(data, treat_var, outcome_var, cutpoint_specs,
-                      estimator = c("regression", "mean_diff"), covariates = NULL) {
+                      estimator = c("regression", "mean_diff"), covariates = NULL,
+                      min_n_per_arm = 1,
+                      vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")) {
   estimator <- match.arg(estimator)
-  matched <- elicit_and_match(data, treat_var, cutpoint_specs)
-  fit <- fit_effect(data, treat_var, outcome_var, matched, estimator = estimator, covariates = covariates)
+  vcov_type <- match.arg(vcov_type)
+  matched <- elicit_and_match(data, treat_var, cutpoint_specs, min_n_per_arm = min_n_per_arm)
+  fit <- fit_effect(data, treat_var, outcome_var, matched, estimator = estimator, covariates = covariates,
+                     vcov_type = vcov_type)
   c(list(matched = matched), fit)
 }
 
@@ -275,11 +342,10 @@ run_draw <- function(data, treat_var, outcome_var, cutpoint_specs,
 #'
 #' `exact_if_K_leq` defaults to `NULL`, i.e. always Monte Carlo -- the
 #' original behavior -- so existing callers are unaffected unless they opt
-#' in. [excess_variance_test()] and [existence_test()] call `run_M_draws()`
-#' internally and summarize it with an unweighted variance; turning
-#' exactness on for them would also require switching that summary to a
-#' weighted variance, which this package does not currently do, so those
-#' two functions do not set `exact_if_K_leq`.
+#' in. It's specific to this function: [existence_test()]'s own bootstrap
+#' (via `bootstrap_congeniality()`) reruns [elicit_and_match()]/
+#' [fit_effect()] directly rather than going through `run_M_draws()`, so
+#' `exact_if_K_leq` has no effect on it either way.
 #'
 #' @inheritParams run_draw
 #' @param M Integer; number of Monte Carlo draws to run (ignored if exact
@@ -293,29 +359,48 @@ run_draw <- function(data, treat_var, outcome_var, cutpoint_specs,
 #'   per-draw records, as returned by [run_draw()], with attributes
 #'   `exact` (logical), `weights` (numeric, summing to 1), and, when
 #'   exact, `regimes` and `K`. Also carries `treat_var`, `outcome_var`,
-#'   `cutpoint_specs`, `estimator`, and `covariates` as attributes, so that
-#'   [pooling_diagnostics()], [existence_test()] (and, in principle, your
-#'   own code) can recover them from `draws` alone rather than having to
-#'   pass them again -- which matters more than it might seem for
-#'   `estimator`/`covariates`, since the bootstrap-based diagnostics need
-#'   to refit draws the *same* way `draws` was originally computed to give
-#'   a meaningful null distribution. Has [print.ecem_draws()],
-#'   [summary.ecem_draws()], and [as.data.frame.ecem_draws()] methods;
-#'   still usable as a plain list everywhere else in this package (e.g.
-#'   [retention_matrix()], [pool_draws()]).
+#'   `cutpoint_specs`, `estimator`, `covariates`, `min_n_per_arm`, and
+#'   `vcov_type` as attributes, so that [pooling_diagnostics()],
+#'   [existence_test()] (and, in principle, your own code) can recover them
+#'   from `draws` alone rather than having to pass them again -- which
+#'   matters more than it might seem for `estimator`/`covariates`/
+#'   `min_n_per_arm`, since the bootstrap-based diagnostics need to refit
+#'   draws the *same* way `draws` was originally computed to give a
+#'   meaningful null distribution. `vcov_type` is the exception: it only
+#'   changes `var_hat` (a refit's point estimate `tau_hat` is identical
+#'   regardless of `vcov_type`), and the bootstrap-based diagnostics never
+#'   read a refit's `var_hat` -- so `vcov_type` is carried here purely for
+#'   provenance/reproducibility, not because anything downstream recovers
+#'   and reapplies it. Has [print.ecem_draws()], [summary.ecem_draws()],
+#'   and [as.data.frame.ecem_draws()] methods; still usable as a plain list
+#'   everywhere else in this package (e.g. [retention_matrix()],
+#'   [pool_draws()]).
 #'
 #' @export
 run_M_draws <- function(data, treat_var, outcome_var, cutpoint_specs, M,
                          exact_if_K_leq = NULL,
-                         estimator = c("regression", "mean_diff"), covariates = NULL) {
+                         estimator = c("regression", "mean_diff"), covariates = NULL,
+                         min_n_per_arm = 1,
+                         vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")) {
   estimator <- match.arg(estimator)
+  vcov_type <- match.arg(vcov_type)
   exact <- FALSE
   if (!is.null(exact_if_K_leq)) {
-    K <- count_achievable_configs(data, cutpoint_specs)$K
+    ## count_only = TRUE: only the threshold comparison below needs K at
+    ## this point -- if it passes, enumerate_configs() below builds the
+    ## actual configs itself (a second, independent pass); if it doesn't,
+    ## the fallback to Monte Carlo draws is exactly the point of
+    ## exact_if_K_leq in the first place. Materializing every achievable
+    ## config here just to measure the list's length would defeat that
+    ## fallback on real, unrounded covariates, where K can be too large to
+    ## ever finish enumerating -- exactly the case this argument exists to
+    ## detect and avoid.
+    K <- count_achievable_configs(data, cutpoint_specs, count_only = TRUE)$K
     if (K <= exact_if_K_leq) {
       enum  <- enumerate_configs(data, cutpoint_specs)
       draws <- lapply(enum$specs, function(spec_i) {
-        run_draw(data, treat_var, outcome_var, spec_i, estimator = estimator, covariates = covariates)
+        run_draw(data, treat_var, outcome_var, spec_i, estimator = estimator, covariates = covariates,
+                 min_n_per_arm = min_n_per_arm, vcov_type = vcov_type)
       })
       attr(draws, "weights") <- enum$weights
       attr(draws, "regimes") <- enum$regimes
@@ -325,7 +410,8 @@ run_M_draws <- function(data, treat_var, outcome_var, cutpoint_specs, M,
   }
   if (!exact) {
     draws <- lapply(seq_len(M), function(m) {
-      run_draw(data, treat_var, outcome_var, cutpoint_specs, estimator = estimator, covariates = covariates)
+      run_draw(data, treat_var, outcome_var, cutpoint_specs, estimator = estimator, covariates = covariates,
+               min_n_per_arm = min_n_per_arm, vcov_type = vcov_type)
     })
     attr(draws, "weights") <- rep(1 / M, M)
   }
@@ -336,6 +422,8 @@ run_M_draws <- function(data, treat_var, outcome_var, cutpoint_specs, M,
   attr(draws, "cutpoint_specs") <- cutpoint_specs
   attr(draws, "estimator")      <- estimator
   attr(draws, "covariates")     <- covariates
+  attr(draws, "min_n_per_arm")  <- min_n_per_arm
+  attr(draws, "vcov_type")      <- vcov_type
   class(draws) <- c("ecem_draws", "list")
   draws
 }

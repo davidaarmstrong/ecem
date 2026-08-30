@@ -185,14 +185,13 @@ draw-match-pool code above is unchanged either way.)
 A pooled `tau_bar` is only as trustworthy as the assumption that every
 draw is estimating the same underlying quantity. `pooling_diagnostics()`
 bundles the checks for that: a pre-matching flatness test on each
-elicited covariate, and a bootstrap excess-variance test computed
-directly on the realized draws (`n_boot` is kept small below so this
-vignette runs quickly -- use several hundred for actual inference).
+elicited covariate, a congeniality test (a single fixed-specification fit
+-- no resampling, so this is cheap regardless of sample size), and a
+retention-interaction diagnostic.
 
 ```{r}
 set.seed(3)
-diag_1 <- pooling_diagnostics(pop, draws_1, pooled = pooled_1,
-                               n_boot = 100, progress = FALSE)
+diag_1 <- pooling_diagnostics(pop, draws_1, pooled = pooled_1)
 diag_1
 ```
 
@@ -205,7 +204,7 @@ and the printout above should recommend pooling with no caveat.
 To see the other branch of the workflow, simulate a population where the
 effect genuinely does vary with the elicited covariate
 (`heterogeneous = TRUE` makes `tau(age)` a real linear function of
-`age`, which is exactly what the flatness/excess-variance tests are
+`age`, which is exactly what the flatness/congeniality tests are
 built to catch):
 
 ```{r}
@@ -214,20 +213,18 @@ pop_het <- simulate_population(N = 2000, tau0 = 3, heterogeneous = TRUE)
 draws_het <- run_M_draws(pop_het, "D", "Y", cutpoint_specs_1, M = 30)
 pooled_het <- pool_draws(draws_het)
 
-diag_het <- pooling_diagnostics(pop_het, draws_het, pooled = pooled_het,
-                                 n_boot = 100, progress = FALSE)
+diag_het <- pooling_diagnostics(pop_het, draws_het, pooled = pooled_het)
 diag_het
 ```
 
-If excess-variance rejects here, `pool_draws()`'s `tau_bar` is no longer
+If congeniality rejects here, `pool_draws()`'s `tau_bar` is no longer
 trustworthy as a single pooled estimate, regardless of what the
 flatness test says. The recommended fallback is a Simonsohn-style
-existence test -- and since `pooling_diagnostics()` already bootstrapped
-matches on this same `draws_het`, passing it in as `diagnostics =` reuses
-that bootstrap instead of rerunning one from scratch:
+existence test, which bootstraps fresh (`n_boot` is kept small below so
+this vignette runs quickly -- use several hundred for actual inference):
 
 ```{r}
-existence_test(pop_het, draws_het, diagnostics = diag_het)
+existence_test(pop_het, draws_het, n_boot = 100, progress = FALSE)
 ```
 
 Rejecting here is evidence that *some* nonzero effect exists somewhere
@@ -274,7 +271,7 @@ gets loaded) and work through this checklist:
 - Choose `M` (or `exact_if_K_leq` if the achievable-configuration count
   is small -- check with `count_achievable_configs()`).
 - Always run `pooling_diagnostics()` before reporting a pooled `tau_bar`
-  from `pool_draws()`. If excess-variance rejects, fall back to
+  from `pool_draws()`. If congeniality rejects, fall back to
   `existence_test()` and report draws descriptively instead.
 - Run `label_diagnostics()` to know whether to report the result as an
   FSATT, ATT, or ATE.

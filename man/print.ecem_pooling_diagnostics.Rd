@@ -18,9 +18,9 @@
 }
 \description{
 Reports the flatness and congeniality diagnostics from
-\code{\link[=pooling_diagnostics]{pooling_diagnostics()}} together (and the retention-interaction and
-excess-variance diagnostics, if computed), and spells out which of the
-paper's Section 6.3 workflow outcomes they imply: pool cleanly, flag a
+\code{\link[=pooling_diagnostics]{pooling_diagnostics()}} together (and the retention-interaction
+diagnostic, if computed), and spells out which of the paper's Section
+6.3 workflow outcomes they imply: pool cleanly, flag a
 discrepancy (and check whether the retention diagnostic explains it --
 and, if not, whether testing at a different position in the elicited
 range clarifies things), or treat congeniality as having failed and

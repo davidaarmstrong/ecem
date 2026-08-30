@@ -29,7 +29,7 @@ small enough, exactly enumerates -- see \code{exact_if_K_leq}) repeated
 coarsenings, matches, and estimates on each; \code{\link[=pool_draws]{pool_draws()}} combines
 them via Rubin's rules. \code{\link[=pooling_diagnostics]{pooling_diagnostics()}} bundles the checks for
 whether that pooling is valid (\code{\link[=flatness_test_XE]{flatness_test_XE()}},
-\code{\link[=excess_variance_test]{excess_variance_test()}}, and the retention-interaction diagnostic) into
+\code{\link[=congeniality_test]{congeniality_test()}}, and the retention-interaction diagnostic) into
 one call; if pooling is not valid, \code{\link[=existence_test]{existence_test()}} provides a
 fallback (and can reuse \code{\link[=pooling_diagnostics]{pooling_diagnostics()}}'s bootstrap rather than
 rerunning one). \code{\link[=label_diagnostics]{label_diagnostics()}} bundles \code{\link[=cov_att_ate]{cov_att_ate()}} and

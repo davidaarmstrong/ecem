@@ -24,6 +24,29 @@ test_that("congeniality_test runs on a single elicited covariate and returns a w
   expect_true(cg$n_bins >= 2)
   ## mid position: fixed cutpoint per range is that range's mean.
   expect_equal(cg$fixed_cutpoints$age, c(mean(c(25, 33)), mean(c(60, 68))))
+  ## HC4 is the validated default and is reported back on the result, not
+  ## just silently used.
+  expect_equal(cg$vcov_type, "HC4")
+})
+
+test_that("congeniality_test respects vcov_type and reports it back on every return path", {
+  set.seed(9)
+  pop <- simulate_population(N = 1000, heterogeneous = FALSE)
+  specs <- list(age = list(c(25, 33), c(60, 68)))
+
+  cg_hc4m <- congeniality_test(pop, "D", "Y", specs, vcov_type = "HC4m")
+  expect_equal(cg_hc4m$vcov_type, "HC4m")
+  expect_true(is.numeric(cg_hc4m$p_value))
+  expect_false(is.na(cg_hc4m$p_value))
+
+  ## vcov_type is also reported back on the graceful-NA paths, not just
+  ## the successful one -- e.g. the "collapses to < 2 populated bins"
+  ## degeneracy path from the toy-data tests below.
+  data <- make_toy_data()
+  degenerate_specs <- list(x = list(c(1, 2), c(2, 3), c(3, 4)))
+  cg_degenerate <- congeniality_test(data, "D", "Y", degenerate_specs, vcov_type = "HC4m")
+  expect_true(is.na(cg_degenerate$p_value))
+  expect_equal(cg_degenerate$vcov_type, "HC4m")
 })
 
 test_that("congeniality_test has power against real heterogeneity and stays quiet without it", {
@@ -159,6 +182,33 @@ test_that("congeniality_test fails gracefully (NA, not an error) when pruning co
 
   expect_true(is.na(cg$p_value))
   expect_true(cg$n_bins < 2)
+})
+
+test_that("congeniality_test's min_n_per_arm defaults to 1 and is reported back on the result", {
+  set.seed(1)
+  pop <- simulate_population(N = 1000, heterogeneous = FALSE)
+  specs <- list(age = list(c(25, 33), c(60, 68)))
+  cg <- congeniality_test(pop, "D", "Y", specs)
+  expect_equal(cg$min_n_per_arm, 1)
+})
+
+test_that("congeniality_test's min_n_per_arm can prune a well-identified sample down to the NA-graceful empty-match path", {
+  ## Each bin in make_toy_data()'s x = list(c(0,8), c(9,20)) split has only
+  ## 2 treated/2 control -- min_n_per_arm = 1 (default) identifies fine
+  ## (see the "identifies fine on a small but adequately-covered matched
+  ## sample" test above), but raising it past what either bin actually has
+  ## should prune everything and hit the same empty-match NA path as
+  ## make_toy_data_with_unmatched() above, not error.
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 8), c(9, 20)))
+
+  cg_default <- congeniality_test(data, "D", "Y", specs, min_n_per_arm = 1)
+  expect_false(is.na(cg_default$p_value))
+
+  cg_strict <- congeniality_test(data, "D", "Y", specs, min_n_per_arm = 3)
+  expect_true(is.na(cg_strict$p_value))
+  expect_equal(cg_strict$n, 0)
+  expect_equal(cg_strict$min_n_per_arm, 3)
 })
 
 test_that("congeniality_test returns an empty-match result gracefully when nothing is retained", {

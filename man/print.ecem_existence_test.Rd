@@ -22,8 +22,8 @@
 \description{
 Reports the observed statistic, its bootstrap p-value under each draw's
 own null, and a verdict at the given \code{alpha}. See \code{\link[=existence_test]{existence_test()}} for
-when this test is the right fallback (excess-variance has rejected and
-pooling via Rubin's rules is no longer trusted).
+when this test is the right fallback (the congeniality test has
+rejected and pooling via Rubin's rules is no longer trusted).
 }
 \details{
 Rejecting the null here is evidence that \emph{some} nonzero effect exists

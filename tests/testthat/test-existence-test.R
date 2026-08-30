@@ -46,56 +46,6 @@ test_that("existence_test labels a plain stat_fun and falls back for anonymous o
   expect_equal(ex3$stat_label, "custom")
 })
 
-test_that("existence_test(diagnostics =) reuses pooling_diagnostics()'s cached bootstrap", {
-  data <- make_toy_data()
-  specs <- list(x = c(7))
-  draws <- run_M_draws(data, "D", "Y", specs, M = 3)
-  diag <- pooling_diagnostics(data, draws, n_boot = 5)
-
-  expect_type(diag$existence_boot, "list")
-  expect_equal(dim(diag$existence_boot$tau_own), c(5, 3))
-  expect_equal(diag$existence_boot$tau_hat_m, vapply(draws, function(d) d$tau_hat, numeric(1)))
-
-  ex <- existence_test(data, draws, diagnostics = diag)
-  expect_true(ex$reused_bootstrap)
-  expect_equal(ex$n_boot, 5)
-  expect_length(ex$null_stats, 5)
-  ## No bootstrapping was rerun, so this should match a manual summary of
-  ## the exact same cached matrix.
-  expect_equal(ex$null_stats, apply(diag$existence_boot$tau_own, 1, stats::median, na.rm = TRUE))
-})
-
-test_that("existence_test(diagnostics =) lets stat_fun vary without rerunning the bootstrap", {
-  data <- make_toy_data()
-  specs <- list(x = c(7))
-  draws <- run_M_draws(data, "D", "Y", specs, M = 3)
-  diag <- pooling_diagnostics(data, draws, n_boot = 5)
-
-  ex_mean <- existence_test(data, draws, diagnostics = diag, stat_fun = mean)
-  expect_equal(ex_mean$null_stats, apply(diag$existence_boot$tau_own, 1, mean, na.rm = TRUE))
-})
-
-test_that("existence_test errors if diagnostics doesn't match draws", {
-  data <- make_toy_data()
-  specs <- list(x = c(7))
-  draws <- run_M_draws(data, "D", "Y", specs, M = 3)
-  diag <- pooling_diagnostics(data, draws, n_boot = 5)
-
-  ## Force a deterministic mismatch rather than relying on two independent
-  ## draws happening to differ (which a fixed-only spec like this one, with
-  ## no randomness in the matching, would not guarantee).
-  draws_other <- draws
-  draws_other[[1]]$tau_hat <- draws_other[[1]]$tau_hat + 1
-  expect_error(existence_test(data, draws_other, diagnostics = diag), "different set")
-})
-
-test_that("existence_test errors if diagnostics isn't an ecem_pooling_diagnostics object", {
-  data <- make_toy_data()
-  specs <- list(x = c(7))
-  draws <- run_M_draws(data, "D", "Y", specs, M = 3)
-  expect_error(existence_test(data, draws, diagnostics = list()), "must be the result of pooling_diagnostics")
-})
-
 ## print.ecem_existence_test's branching logic, tested against hand-built
 ## objects with known p-values -- deterministic and independent of n_boot.
 make_fake_existence <- function(observed_stat = 2, p_value = 0.5, M = 10, n_boot = 50,

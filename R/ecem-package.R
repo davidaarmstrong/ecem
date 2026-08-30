@@ -21,7 +21,7 @@
 #' coarsenings, matches, and estimates on each; [pool_draws()] combines
 #' them via Rubin's rules. [pooling_diagnostics()] bundles the checks for
 #' whether that pooling is valid ([flatness_test_XE()],
-#' [excess_variance_test()], and the retention-interaction diagnostic) into
+#' [congeniality_test()], and the retention-interaction diagnostic) into
 #' one call; if pooling is not valid, [existence_test()] provides a
 #' fallback (and can reuse [pooling_diagnostics()]'s bootstrap rather than
 #' rerunning one). [label_diagnostics()] bundles [cov_att_ate()] and

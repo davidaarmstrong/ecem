@@ -2,14 +2,22 @@
 #'
 #' Runs the pre-matching flatness test ([flatness_test_XE()], once per
 #' elicited or [regime()] covariate, over that covariate's full union
-#' range), the congeniality test ([congeniality_test()], at a single fixed
-#' representative specification -- see its documentation for why this
-#' replaced the earlier resampling-based excess-variance design), and, by
-#' default, the retention-interaction diagnostic ([cov_retention_per_draw()])
-#' -- the three checks Section 6.3 of the paper uses to decide whether
-#' pooling via Rubin's rules is trustworthy, and what to report if it is
-#' not. [print.ecem_pooling_diagnostics()] reports the results together
-#' with that decision logic spelled out.
+#' range), the congeniality test ([congeniality_test()] -- see its
+#' documentation for why this replaced the earlier resampling-based
+#' excess-variance design), and, by default, the retention-interaction
+#' diagnostic ([cov_retention_per_draw()]) -- the three checks Section 6.3
+#' of the paper uses to decide whether pooling via Rubin's rules is
+#' trustworthy, and what to report if it is not.
+#' [print.ecem_pooling_diagnostics()] reports the results together with
+#' that decision logic spelled out.
+#'
+#' The congeniality test is run at `"low"`, `"mid"`, and `"high"` by
+#' default (see `congeniality_position`), not just one fixed
+#' specification: a test that stays quiet at a single position can simply
+#' be sitting where drift is weak. Congeniality is treated as having
+#' failed if *any* tested position rejects -- catching drift anywhere in
+#' the elicited range is the whole point of testing more than one
+#' position.
 #'
 #' `treat_var`, `outcome_var`, and `cutpoint_specs` are recovered from
 #' `draws` itself by default -- [run_M_draws()] stores them as attributes
@@ -27,27 +35,17 @@
 #'
 #' This function does not itself run [existence_test()], even when the
 #' congeniality test rejects and the printed guidance recommends it --
-#' that decision is left as a deliberate next step. It can, however,
-#' precompute the expensive part of `existence_test()`'s own work as a
-#' side effect (`run_existence_cache = TRUE`, the default): a bootstrap
-#' that resamples the retained-and-treated units and refits each draw's
-#' own null, cached as `existence_boot` for `existence_test()`'s
-#' `diagnostics` argument to reuse instead of bootstrapping a second time.
-#' Set `run_existence_cache = FALSE` if you only want the cheap (no
-#' resampling) congeniality/retention diagnostics and don't plan to call
-#' `existence_test()` afterward -- that skips the bootstrap entirely,
-#' which otherwise runs unconditionally regardless of whether anything
-#' downstream needs it.
-#'
-#' `run_excess_variance = FALSE` by default: [excess_variance_test()] is
-#' the earlier, resampling-based congeniality design the paper's Appendix
-#' documents as invalid (near-zero power regardless of true heterogeneity,
-#' for reasons rooted in the bootstrap's inconsistency for discrete
-#' matching estimators). It's kept computable here, off by default, only
-#' for reproducing that earlier design or comparing against it directly --
-#' it is no longer part of the recommended workflow, and
-#' [print.ecem_pooling_diagnostics()] does not use it to make any
-#' decision.
+#' that decision is left as a deliberate next step, and [existence_test()]
+#' bootstraps fresh when you take it. There is nothing to precompute or
+#' cache here: an earlier design let this function's bootstrap be shared
+#' with a second, now-removed test, but [existence_test()] is the only
+#' test left that resamples, so running its bootstrap inside this function
+#' first would cost exactly the same `n_boot x M` rematches as running it
+#' later inside [existence_test()] itself -- with the downside that it
+#' would pay that cost on every call, including the (usually common)
+#' specifications where congeniality doesn't reject and [existence_test()]
+#' is never needed. This function is therefore cheap unconditionally: no
+#' resampling, no rematching.
 #'
 #' @param data A data frame, the same one used to produce `draws`. Needed
 #'   again here because the flatness and congeniality tests both rerun
@@ -62,51 +60,52 @@
 #' @param treat_var,outcome_var,cutpoint_specs `NULL` (the default) to
 #'   recover these from `draws`'s attributes; supply them explicitly to
 #'   override, or if `draws` doesn't carry them (see Details).
-#' @param estimator,covariates `NULL` (the default) to recover these from
-#'   `draws`'s attributes too (see [run_M_draws()]), so any bootstrap
-#'   refits draws the same way `draws` was actually computed.
 #' @param pooled Optional; the result of [pool_draws(draws)][pool_draws()].
 #'   Computed automatically if not supplied.
 #' @param run_congeniality Logical; whether to run [congeniality_test()].
 #'   Defaults to `TRUE`.
-#' @param congeniality_position `"mid"` (default), `"low"`, or `"high"` --
-#'   passed straight through to [congeniality_test()]'s `position`.
+#' @param congeniality_position `c("low", "mid", "high")` (the default) to
+#'   run [congeniality_test()] at all three positions, each passed straight
+#'   through to its `position` argument; supply a subset (even a single
+#'   value, e.g. `"mid"`) to restrict which positions are tested. Testing
+#'   all three is the point of the default -- drift that's weak at one
+#'   fixed specification can be strong at another, so a single position
+#'   silently passing is not by itself evidence of congeniality.
+#' @param congeniality_vcov_type `"HC4"` (default) -- passed straight
+#'   through to [congeniality_test()]'s `vcov_type`. Switch to `"HC4m"` if
+#'   you see a `sandwich::vcovHC()` warning about numerically unstable
+#'   covariances at high-leverage observations (common on real,
+#'   unrounded data with a sparse treatment-by-bin cell) -- see
+#'   [congeniality_test()]'s documentation for why.
+#' @param congeniality_min_n_per_arm `1` (default, CEM's usual any-unit-
+#'   per-arm retention rule) -- passed straight through to
+#'   [congeniality_test()]'s `min_n_per_arm`. Raise this to also require a
+#'   minimum sample size per treatment arm within each matched stratum
+#'   before it's used for the congeniality test, e.g. to avoid
+#'   `sandwich::vcovHC()` instability at singleton/near-singleton cells --
+#'   see [congeniality_test()]'s documentation for why.
 #' @param run_retention Logical; whether to compute the retention-
 #'   interaction (`FSATT_m - ATT`) diagnostic. Defaults to `TRUE`; it is
 #'   cheap (no bootstrapping, no rematching) and is exactly what the
 #'   printed guidance points to when flatness and the congeniality test
 #'   disagree.
-#' @param run_existence_cache Logical; whether to precompute and cache the
-#'   bootstrap [existence_test()] would otherwise redo itself (see
-#'   Details). Defaults to `TRUE`.
-#' @param run_excess_variance Logical; whether to also compute the
-#'   superseded resampling-based excess-variance test (see Details).
-#'   Defaults to `FALSE`.
-#' @param n_boot Integer; number of bootstrap replicates, used if either
-#'   `run_existence_cache` or `run_excess_variance` is `TRUE` (ignored
-#'   otherwise). Kept modest by default for interactive use; use at least
-#'   a few hundred for actual inference.
 #' @param alpha Significance level used to label each test's verdict in
 #'   the printed output (and to choose which guidance
 #'   [print.ecem_pooling_diagnostics()] prints). Defaults to `0.05`.
-#' @param progress Logical; show a text progress bar over the bootstrap's
-#'   `n_boot` replicates, if it runs at all (see `run_existence_cache`/
-#'   `run_excess_variance`). Defaults to `interactive()`.
 #'
 #' @return An object of class `"ecem_pooling_diagnostics"`, a list with
 #'   elements `flatness` (named list of [flatness_test_XE()] results, one
 #'   per elicited/regime covariate), `congeniality` (`NULL` if
 #'   `run_congeniality = FALSE` or nothing in `cutpoint_specs` is
-#'   elicited, else [congeniality_test()]'s result), `excess_variance`
-#'   (`NULL` unless `run_excess_variance = TRUE`), `retention` (`NULL` if
+#'   elicited, else a named list of [congeniality_test()] results, one per
+#'   position actually tested, named by that position -- e.g.
+#'   `congeniality$high` -- even when only one position was requested),
+#'   `retention` (`NULL` if
 #'   `run_retention = FALSE`, else a list with `gap`, `mean`, `sd`),
 #'   `pooled`, `M`, `K` (from [count_achievable_configs()], used by
 #'   [print.ecem_pooling_diagnostics()] to decide whether recommending
 #'   exact enumeration is actually practical for pooling precision),
-#'   `exact`, `alpha`, and `existence_boot` (`NULL` unless
-#'   `run_existence_cache = TRUE`; a cache of this call's bootstrap
-#'   matches, refit under each draw's own null, for `existence_test()`'s
-#'   `diagnostics` argument to reuse -- see Details).
+#'   `exact`, and `alpha`.
 #'
 #' @examples
 #' \donttest{
@@ -114,18 +113,22 @@
 #' pop <- simulate_population(N = 1000, heterogeneous = TRUE)
 #' specs <- list(age = list(c(25, 33), c(60, 68)), educ = c(12, 16))
 #' draws <- run_M_draws(pop, "D", "Y", specs, M = 15)
-#' diag <- pooling_diagnostics(pop, draws, n_boot = 30)
+#' diag <- pooling_diagnostics(pop, draws)
 #' diag
 #' }
 #'
 #' @export
 pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NULL,
-                                 cutpoint_specs = NULL, estimator = NULL, covariates = NULL,
+                                 cutpoint_specs = NULL,
                                  pooled = NULL,
-                                 run_congeniality = TRUE, congeniality_position = "mid",
+                                 run_congeniality = TRUE,
+                                 congeniality_position = c("low", "mid", "high"),
+                                 congeniality_vcov_type = "HC4",
+                                 congeniality_min_n_per_arm = 1,
                                  run_retention = TRUE,
-                                 run_existence_cache = TRUE, run_excess_variance = FALSE,
-                                 n_boot = 200, alpha = 0.05, progress = interactive()) {
+                                 alpha = 0.05) {
+  congeniality_position <- match.arg(congeniality_position, choices = c("low", "mid", "high"),
+                                      several.ok = TRUE)
   if (is.null(treat_var))      treat_var      <- attr(draws, "treat_var")
   if (is.null(outcome_var))    outcome_var    <- attr(draws, "outcome_var")
   if (is.null(cutpoint_specs)) cutpoint_specs <- attr(draws, "cutpoint_specs")
@@ -139,14 +142,6 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
       "cutpoint_specs is missing explicitly."
     )
   }
-
-  ## estimator has no NULL-means-"missing" ambiguity to guard against the
-  ## way treat_var/outcome_var/cutpoint_specs do -- draws predating this
-  ## attribute (there shouldn't be any outside development) fall back to
-  ## the current default rather than erroring.
-  if (is.null(estimator))  estimator  <- attr(draws, "estimator")
-  if (is.null(estimator))  estimator  <- "regression"
-  if (is.null(covariates)) covariates <- attr(draws, "covariates")
 
   if (is.null(pooled)) {
     pooled <- pool_draws(draws)
@@ -162,8 +157,13 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
 
   congeniality <- NULL
   if (run_congeniality && length(xe_ranges) > 0) {
-    congeniality <- congeniality_test(data, treat_var, outcome_var, cutpoint_specs,
-                                       position = congeniality_position)
+    congeniality <- lapply(congeniality_position, function(pos) {
+      congeniality_test(data, treat_var, outcome_var, cutpoint_specs,
+                         position = pos,
+                         vcov_type = congeniality_vcov_type,
+                         min_n_per_arm = congeniality_min_n_per_arm)
+    })
+    names(congeniality) <- congeniality_position
   }
 
   retention <- NULL
@@ -174,51 +174,29 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
     retention <- list(gap = gap, mean = mean(gap, na.rm = TRUE), sd = stats::sd(gap, na.rm = TRUE))
   }
 
-  ## The bootstrap below is the expensive part of this function (it reruns
-  ## CEM matching n_boot x M times) -- only pay for it if something
-  ## actually needs it. run_existence_cache is what most callers want
-  ## (existence_test() reuse, for free, if the congeniality test rejects);
-  ## run_excess_variance reproduces the superseded design (see Details)
-  ## and is off by default. One combined bootstrap serves both when both
-  ## are requested, since elicit_and_match() never looks at the outcome --
-  ## see bootstrap_congeniality()'s comment.
-  excess_variance <- NULL
-  existence_boot  <- NULL
-  if (run_existence_cache || run_excess_variance) {
-    tau_hat_m <- vapply(draws, function(d) d$tau_hat, numeric(1))
-    boot <- bootstrap_congeniality(
-      data, treat_var, outcome_var, cutpoint_specs, M,
-      tau_bar   = if (run_excess_variance)  pooled$tau_bar else NULL,
-      tau_hat_m = if (run_existence_cache) tau_hat_m       else NULL,
-      n_boot = n_boot, estimator = estimator, covariates = covariates,
-      progress = progress
-    )
-    if (run_excess_variance) {
-      excess_variance <- excess_variance_from_B_null(boot$B_null, B_obs = pooled$B)
-    }
-    if (run_existence_cache) {
-      existence_boot <- list(tau_own = boot$tau_own, tau_hat_m = tau_hat_m, M = M, n_boot = n_boot)
-    }
-  }
-
   ## Cheap (no bootstrapping, no matching) and lets print.ecem_pooling_diagnostics()
   ## give concrete, K-aware advice about POOLING precision (exact
   ## enumeration vs. a larger M) -- the congeniality test itself no longer
   ## depends on K or M at all, so this is reported for that separate
-  ## question, not as a lever on the congeniality verdict.
-  K <- count_achievable_configs(data, cutpoint_specs)$K
+  ## question, not as a lever on the congeniality verdict. count_only =
+  ## TRUE is essential here, not just an optimization: this function only
+  ## ever reads $K, but count_achievable_configs()'s default path
+  ## materializes every achievable config's cutpoints/weight to get it --
+  ## on real, unrounded covariates with many distinct values, that list
+  ## can run into the millions or billions of entries and make an
+  ## otherwise-cheap diagnostic call hang indefinitely. count_only = TRUE
+  ## computes K directly from gap counts instead.
+  K <- count_achievable_configs(data, cutpoint_specs, count_only = TRUE)$K
 
   out <- list(
-    flatness        = flatness,
-    congeniality    = congeniality,
-    excess_variance = excess_variance,
-    retention       = retention,
-    pooled          = pooled,
-    M               = M,
-    K               = K,
-    exact           = isTRUE(attr(draws, "exact")),
-    alpha           = alpha,
-    existence_boot  = existence_boot
+    flatness     = flatness,
+    congeniality = congeniality,
+    retention    = retention,
+    pooled       = pooled,
+    M            = M,
+    K            = K,
+    exact        = isTRUE(attr(draws, "exact")),
+    alpha        = alpha
   )
   class(out) <- "ecem_pooling_diagnostics"
   out

@@ -104,6 +104,46 @@ enumerate_var_configs <- function(data, var, spec) {
   NULL                                              # fixed (X_F): doesn't vary
 }
 
+## Achievable-config COUNT for one covariate, without materializing the
+## per-config cutpoints/weight list enumerate_var_configs() builds --
+## mirrors its logic exactly (product of per-range gap counts for a plain
+## elicited covariate; sum across regimes of each regime's own product for
+## a regime() covariate) but only ever computes integers. enumerate_gaps()
+## itself is already cheap (O(N log N) per range, just sorting the
+## observed values in range); what's expensive in enumerate_var_configs()
+## is the per-row lapply() that follows it to build one list entry per
+## achievable combination, which this skips entirely. Real, unrounded
+## covariates can put the achievable count in the millions or billions per
+## variable -- fine to know as a number, infeasible to ever materialize as
+## a list -- so count_achievable_configs()'s count_only path (the one
+## pooling_diagnostics() uses, since it only ever reads $K) calls this
+## instead of enumerate_var_configs() for exactly that reason.
+##
+## Internal to count_achievable_configs().
+count_var_configs <- function(data, var, spec) {
+  x <- data[[var]]
+
+  if (is.null(spec) || identical(spec, "exact")) {
+    return(NULL)                                  # excluded / exact: fixed across draws
+  }
+
+  range_gap_count <- function(r) nrow(enumerate_gaps(x, r))
+
+  if (inherits(spec, "cem_regime_spec")) {
+    total <- 0
+    for (rname in names(spec$regimes)) {
+      total <- total + prod(vapply(spec$regimes[[rname]], range_gap_count, integer(1)))
+    }
+    return(total)                                  # sum across regimes, not a product
+  }
+
+  if (is.list(spec)) {                              # ordinary elicited covariate
+    return(prod(vapply(spec, range_gap_count, integer(1))))
+  }
+
+  NULL                                              # fixed (X_F): doesn't vary
+}
+
 #' Count the achievable-configuration ceiling K
 #'
 #' See `?"exact-enumeration"` for the underlying argument. Reports how many
@@ -112,16 +152,50 @@ enumerate_var_configs <- function(data, var, spec) {
 #' stops buying additional power and starts just re-estimating the same
 #' fixed quantity more precisely.
 #'
+#' `count_only = FALSE` (the default) additionally materializes and
+#' returns every achievable config's realized cutpoints/weight in
+#' `per_variable` -- this is what [enumerate_configs()] needs to actually
+#' build them, but it means the *count* isn't free: real, unrounded
+#' covariates can have thousands of distinct values per elicited range, and
+#' the achievable count for even one covariate with more than one elicited
+#' range is the *product* of those per-range counts, easily reaching
+#' millions or billions. Materializing a list that large is what's slow,
+#' not computing its length. Set `count_only = TRUE` to get just `K` (and
+#' `counts_by_variable`) computed directly from each range's gap count,
+#' without ever building the per-config list -- this stays fast regardless
+#' of how large `K` turns out to be, which is why
+#' [pooling_diagnostics()] uses it: it only ever reads `$K`, to report
+#' pooling precision, never the enumerated configs themselves.
+#'
 #' @inheritParams elicit_and_match
+#' @param count_only Logical; if `TRUE`, compute `K` (and
+#'   `counts_by_variable`) directly from gap counts without materializing
+#'   `per_variable`. Defaults to `FALSE` for backward compatibility (this
+#'   function's output has always included `per_variable`), but callers
+#'   who only need `K` should pass `TRUE` -- see Details.
 #'
 #' @return A list with elements `K` (the total achievable-configuration
 #'   count, the product across covariates of each covariate's own count),
 #'   `per_variable` (named list, one entry per varying covariate, each a
-#'   list of achievable configs with their cutpoints/weight/regime), and,
-#'   if any covariate varies, `counts_by_variable` (named integer vector).
+#'   list of achievable configs with their cutpoints/weight/regime --
+#'   omitted when `count_only = TRUE`), and, if any covariate varies,
+#'   `counts_by_variable` (named numeric vector).
 #'
 #' @export
-count_achievable_configs <- function(data, cutpoint_specs) {
+count_achievable_configs <- function(data, cutpoint_specs, count_only = FALSE) {
+  if (count_only) {
+    counts <- list()
+    for (v in names(cutpoint_specs)) {
+      n <- count_var_configs(data, v, cutpoint_specs[[v]])
+      if (!is.null(n)) counts[[v]] <- n
+    }
+    if (length(counts) == 0) {
+      return(list(K = 1L))
+    }
+    counts <- unlist(counts)
+    return(list(K = prod(counts), counts_by_variable = counts))
+  }
+
   per_var <- list()
   for (v in names(cutpoint_specs)) {
     cfgs <- enumerate_var_configs(data, v, cutpoint_specs[[v]])

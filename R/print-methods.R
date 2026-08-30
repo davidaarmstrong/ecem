@@ -260,9 +260,9 @@ power_next_step <- function(x) {
 #' Print a pooling-diagnostics result
 #'
 #' Reports the flatness and congeniality diagnostics from
-#' [pooling_diagnostics()] together (and the retention-interaction and
-#' excess-variance diagnostics, if computed), and spells out which of the
-#' paper's Section 6.3 workflow outcomes they imply: pool cleanly, flag a
+#' [pooling_diagnostics()] together (and the retention-interaction
+#' diagnostic, if computed), and spells out which of the paper's Section
+#' 6.3 workflow outcomes they imply: pool cleanly, flag a
 #' discrepancy (and check whether the retention diagnostic explains it --
 #' and, if not, whether testing at a different position in the elicited
 #' range clarifies things), or treat congeniality as having failed and
@@ -296,34 +296,53 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
 
   cg <- x$congeniality
   cg_reject <- FALSE
+  cg_all_na <- FALSE
+  positions_tested <- character(0)
+  all_positions_tested <- FALSE
   if (is.null(cg)) {
     cat("Congeniality test: not run (run_congeniality = FALSE, or nothing in this\n")
     cat("spec is elicited -- there's nothing to test congeniality of).\n\n")
   } else {
-    cg_reject <- isTRUE(cg$p_value < x$alpha)
-    cat(sprintf("Congeniality test (fixed specification, position = \"%s\", matched sample):\n",
-                cg$position))
-    if (is.na(cg$p_value)) {
-      cat(sprintf("  p = NA   n = %d   [matched sample too small/degenerate to test -- see congeniality_test()]\n",
-                  cg$n))
-    } else {
-      cat(sprintf("  p = %s   n = %d   n_bins = %d   [%s]\n",
-                  g(cg$p_value), cg$n, cg$n_bins,
-                  if (cg_reject) "FSATT DRIFTS across the elicited range" else "no drift detected"))
+    positions_tested <- names(cg)
+    all_positions_tested <- setequal(positions_tested, c("low", "mid", "high"))
+    cg_p <- vapply(cg, function(r) r$p_value, numeric(1))
+    cg_reject_by_pos <- cg_p < x$alpha
+    cg_reject <- isTRUE(any(cg_reject_by_pos, na.rm = TRUE))
+    cg_all_na <- all(is.na(cg_p))
+
+    cat("Congeniality test (fixed specification, matched sample):\n")
+    for (pos in positions_tested) {
+      r <- cg[[pos]]
+      ## vcov_type/min_n_per_arm weren't tracked on congeniality_test()'s
+      ## result before they became user-facing arguments -- fall back to
+      ## the only values that existed before then so older cached
+      ## diagnostics objects and hand-built test fixtures still print
+      ## cleanly. min_n_per_arm is only surfaced when it's actually doing
+      ## something (> 1), to keep the default-case line uncluttered.
+      r_vcov <- if (!is.null(r$vcov_type)) r$vcov_type else "HC4"
+      r_min_n <- if (!is.null(r$min_n_per_arm)) r$min_n_per_arm else 1
+      min_n_suffix <- if (r_min_n > 1) sprintf(", min_n_per_arm = %d", r_min_n) else ""
+      cat(sprintf("  position = \"%s\" (%s-robust%s):\n", pos, r_vcov, min_n_suffix))
+      if (is.na(r$p_value)) {
+        cat(sprintf("    p = NA   n = %d   [matched sample too small/degenerate to test]\n", r$n))
+      } else {
+        cat(sprintf("    p = %s   n = %d   n_bins = %d   [%s]\n",
+                    g(r$p_value), r$n, r$n_bins,
+                    if (isTRUE(cg_reject_by_pos[[pos]])) "FSATT DRIFTS across the elicited range" else "no drift detected"))
+      }
+    }
+    if (length(positions_tested) > 1) {
+      overall <- if (cg_all_na) {
+        "no verdict (every tested position was too degenerate to test)"
+      } else if (cg_reject) {
+        sprintf("REJECTS -- drift detected at position(s) %s",
+                paste(sprintf("\"%s\"", positions_tested[which(cg_reject_by_pos)]), collapse = ", "))
+      } else {
+        "no drift detected at any tested position"
+      }
+      cat(sprintf("  Overall: %s\n", overall))
     }
     cat("\n")
-  }
-
-  if (!is.null(x$excess_variance)) {
-    ev <- x$excess_variance
-    ev_reject <- ev$p_value < x$alpha
-    cat(sprintf("Excess-variance test (superseded design, reproduced on request -- on the %d realized %s):\n",
-                x$M, if (x$exact) "exactly-enumerated configuration(s)" else "Monte Carlo draw(s)"))
-    cat(sprintf("  p = %s   B_obs / median(B*) = %s   [%s]\n",
-                g(ev$p_value), g(ev$ratio),
-                if (ev_reject) "excess variance detected" else "no excess variance detected"))
-    cat("  (Not used below -- see the paper's Appendix for why this design is invalid,\n")
-    cat("  and congeniality_test() for what replaced it.)\n\n")
   }
 
   if (!is.null(x$retention)) {
@@ -337,16 +356,15 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
     cat("Congeniality test wasn't run -- rerun with run_congeniality = TRUE (and at\n")
     cat("least one elicited covariate) for a verdict; flatness alone is a screen, not\n")
     cat("a certificate.\n")
-  } else if (is.na(cg$p_value)) {
-    cat("Congeniality test returned no verdict (matched sample too small/degenerate at\n")
-    cat("this specification) -- try a different position, or treat this as missing\n")
-    cat("rather than as either outcome below.\n")
+  } else if (cg_all_na) {
+    cat("Congeniality test returned no verdict at any tested position (matched sample\n")
+    cat("too small/degenerate throughout) -- try other positions, or treat this as\n")
+    cat("missing rather than as either outcome below.\n")
   } else if (cg_reject) {
     cat("Congeniality test rejects: congeniality has failed regardless of the flatness\n")
     cat("result. Report the draws descriptively and fall back on existence_test()\n")
-    cat("rather than trusting the pooled T -- pass this object as diagnostics = to\n")
-    cat("reuse its cached bootstrap instead of rerunning one from scratch (requires\n")
-    cat("run_existence_cache = TRUE, the default).\n")
+    cat("rather than trusting the pooled T -- call existence_test(data, draws)\n")
+    cat("directly (it bootstraps fresh).\n")
     if (!is.null(x$retention)) {
       cat("The retention diagnostic above is worth reading now as a mechanism-locator:\n")
       cat("it isolates how much of the drift routes through the retention channel.\n")
@@ -356,20 +374,31 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
   } else if (!flatness_reject) {
     cat("Neither test rejects: pool by Rubin's rules with no caveat.\n")
   } else {
-    cat("Flatness rejects but the congeniality test does not: pool by Rubin's rules,\n")
-    cat("but flag the discrepancy.\n")
+    cat("Flatness rejects but the congeniality test does not (at any tested position):\n")
+    cat("pool by Rubin's rules, but flag the discrepancy.\n")
     if (!is.null(x$retention)) {
       cat("If the retention diagnostic above is small and stable across draws, that's a\n")
       cat("complete explanation for why the congeniality test stayed quiet despite real\n")
       cat("heterogeneity in tau(x).\n")
-      cat("If it is not small, the fixed specification tested may simply sit where drift\n")
-      cat("is weak -- rerun congeniality_test() (or pooling_diagnostics() with\n")
-      cat("congeniality_position =) at \"low\" or \"high\" rather than \"mid\" before\n")
-      cat("concluding the discrepancy is benign.\n")
+      if (all_positions_tested) {
+        cat("If it is not small: congeniality was already tested at \"low\", \"mid\", and\n")
+        cat("\"high\", so the discrepancy isn't explained by only checking a position where\n")
+        cat("drift happens to be weak -- it may reflect something the congeniality test's\n")
+        cat("fixed-specification design still can't see.\n")
+      } else {
+        cat("If it is not small, the untested position(s) may simply be where drift is\n")
+        cat("weak -- rerun pooling_diagnostics() with congeniality_position = to cover\n")
+        cat("\"low\"/\"mid\"/\"high\" before concluding the discrepancy is benign.\n")
+      }
     } else {
       cat("Rerun with run_retention = TRUE to check whether the retention channel\n")
-      cat("explains the discrepancy, and consider testing at another position in the\n")
-      cat("elicited range before concluding it's benign.\n")
+      cat("explains the discrepancy")
+      if (all_positions_tested) {
+        cat(" (congeniality was already tested at \"low\", \"mid\", and \"high\").\n")
+      } else {
+        cat(", and consider testing the untested position(s) in the elicited range\n")
+        cat("before concluding it's benign.\n")
+      }
     }
   }
 
@@ -380,8 +409,8 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
 #'
 #' Reports the observed statistic, its bootstrap p-value under each draw's
 #' own null, and a verdict at the given `alpha`. See [existence_test()] for
-#' when this test is the right fallback (excess-variance has rejected and
-#' pooling via Rubin's rules is no longer trusted).
+#' when this test is the right fallback (the congeniality test has
+#' rejected and pooling via Rubin's rules is no longer trusted).
 #'
 #' Rejecting the null here is evidence that *some* nonzero effect exists
 #' somewhere among the draws -- it is deliberately not evidence for any
@@ -412,9 +441,8 @@ print.ecem_existence_test <- function(x, alpha = 0.05, digits = 4, ...) {
   g <- function(v) formatC(v, digits = digits, format = "g")
   reject <- x$p_value < alpha
 
-  cat(sprintf("<ecem_existence_test> Simonsohn-style existence test (%s, %d bootstrap replicate(s)%s)\n",
-              x$stat_label, x$n_boot,
-              if (isTRUE(x$reused_bootstrap)) ", reused from pooling_diagnostics()" else ""))
+  cat(sprintf("<ecem_existence_test> Simonsohn-style existence test (%s, %d bootstrap replicate(s))\n",
+              x$stat_label, x$n_boot))
   cat(sprintf("  observed %s(tau_hat) = %s   p = %s   [%s]\n",
               x$stat_label, g(x$observed_stat), g(x$p_value),
               if (reject) "REJECT null of no effect" else "fail to reject"))

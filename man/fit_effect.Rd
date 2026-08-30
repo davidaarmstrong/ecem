@@ -10,7 +10,8 @@ fit_effect(
   outcome_var,
   matched,
   estimator = c("regression", "mean_diff"),
-  covariates = NULL
+  covariates = NULL,
+  vcov_type = c("classical", "HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")
 )
 }
 \arguments{
@@ -31,6 +32,28 @@ Details.}
 (i.e. \code{names(matched$kinds)} minus any \code{"excluded"} entries) -- the
 same covariates that entered the matching. Ignored for
 \code{"mean_diff"}.}
+
+\item{vcov_type}{\code{"classical"} (the default) for \code{summary.lm()}'s usual
+model-based standard error, or one of \code{"HC4"}, \code{"HC4m"}, \code{"HC3"},
+\code{"HC5"}, \code{"HC1"}, \code{"HC0"} for a heteroskedasticity-consistent ("HCCM"
+/ sandwich) standard error via \code{\link[sandwich:vcovHC]{sandwich::vcovHC()}} instead. Only
+affects \code{var_hat} (and hence any confidence interval or Rubin's-rules
+pooling built on it) -- \code{tau_hat} itself is the same either way, since
+it's the same weighted-least-squares coefficient regardless of which
+variance estimator is applied to it afterward. Ignored for
+\code{"mean_diff"}.
+
+The default is \code{"classical"} rather than matching
+\code{\link[=congeniality_test]{congeniality_test()}}'s HC4 default deliberately: CEM's control
+weights (\code{\link[=cem_weights]{cem_weights()}}) are balancing weights, not weights
+proportional to \code{1 / Var(residual)}, so the model-based SE from a
+weighted \code{lm()} fit is not guaranteed valid the way it would be under
+classical WLS -- an HC-robust SE is arguably the more defensible
+choice in general. But \code{"classical"} is also what this function (and
+published CEM applications more broadly) has always reported, so it
+stays the default for backward compatibility; switch to an HC type if
+you want the more robust alternative, e.g. after checking whether it
+materially changes your reported intervals.}
 }
 \value{
 A list with elements: \code{tau_hat} (the within-draw effect
@@ -49,16 +72,16 @@ returned by \code{\link[=elicit_and_match]{elicit_and_match()}}:
 \itemize{
 \item \code{"regression"} (the default): a weighted regression of \code{outcome_var}
 on \code{treat_var} plus \code{covariates}, using CEM's own control-weighting
-scheme on the retained sample -- the "run whatever
+scheme (\code{\link[=cem_weights]{cem_weights()}}) on the retained sample -- the "run whatever
 model you would have run anyway, on the matched data" approach the
 CEM literature itself recommends (Iacus, King & Porro 2011/2012,
 building on Ho, Imai, King & Stuart's (2007) matching-as-
 nonparametric-preprocessing rationale). \code{tau_hat}/\code{var_hat} are \code{treat_var}'s
-coefficient and squared standard error. Unlike \code{"mean_diff"}, this can
-adjust for covariates' \emph{uncoarsened} values, mopping up residual
-imbalance that coarsening-into-bins leaves behind -- at the cost of
-the usual regression caveats (functional-form assumptions on
-\code{covariates}, classical rather than robust standard errors here).
+coefficient and squared standard error (the latter's estimator
+controlled by \code{vcov_type}). Unlike \code{"mean_diff"}, this can adjust for
+covariates' \emph{uncoarsened} values, mopping up residual imbalance that
+coarsening-into-bins leaves behind -- at the cost of the usual
+regression caveats (functional-form assumptions on \code{covariates}).
 \item \code{"mean_diff"}: a treated-count-weighted stratum mean-difference (no
 regression, no covariate adjustment beyond the matching strata
 themselves) -- simpler and always well-defined, but forgoes the

@@ -4,7 +4,7 @@
 \alias{count_achievable_configs}
 \title{Count the achievable-configuration ceiling K}
 \usage{
-count_achievable_configs(data, cutpoint_specs)
+count_achievable_configs(data, cutpoint_specs, count_only = FALSE)
 }
 \arguments{
 \item{data}{A data frame containing \code{treat_var} and every covariate
@@ -13,13 +13,20 @@ named in \code{cutpoint_specs}.}
 \item{cutpoint_specs}{A named list, one entry per covariate to include
 in the matching, in the format described in
 \code{\link[=draw_cutpoints_for_var]{draw_cutpoints_for_var()}}.}
+
+\item{count_only}{Logical; if \code{TRUE}, compute \code{K} (and
+\code{counts_by_variable}) directly from gap counts without materializing
+\code{per_variable}. Defaults to \code{FALSE} for backward compatibility (this
+function's output has always included \code{per_variable}), but callers
+who only need \code{K} should pass \code{TRUE} -- see Details.}
 }
 \value{
 A list with elements \code{K} (the total achievable-configuration
 count, the product across covariates of each covariate's own count),
 \code{per_variable} (named list, one entry per varying covariate, each a
-list of achievable configs with their cutpoints/weight/regime), and,
-if any covariate varies, \code{counts_by_variable} (named integer vector).
+list of achievable configs with their cutpoints/weight/regime --
+omitted when \code{count_only = TRUE}), and, if any covariate varies,
+\code{counts_by_variable} (named numeric vector).
 }
 \description{
 See \code{?"exact-enumeration"} for the underlying argument. Reports how many
@@ -27,4 +34,20 @@ practically distinct coarsenings are achievable given \code{cutpoint_specs}
 and the observed values in \code{data} -- the ceiling past which a larger \code{M}
 stops buying additional power and starts just re-estimating the same
 fixed quantity more precisely.
+}
+\details{
+\code{count_only = FALSE} (the default) additionally materializes and
+returns every achievable config's realized cutpoints/weight in
+\code{per_variable} -- this is what \code{\link[=enumerate_configs]{enumerate_configs()}} needs to actually
+build them, but it means the \emph{count} isn't free: real, unrounded
+covariates can have thousands of distinct values per elicited range, and
+the achievable count for even one covariate with more than one elicited
+range is the \emph{product} of those per-range counts, easily reaching
+millions or billions. Materializing a list that large is what's slow,
+not computing its length. Set \code{count_only = TRUE} to get just \code{K} (and
+\code{counts_by_variable}) computed directly from each range's gap count,
+without ever building the per-config list -- this stays fast regardless
+of how large \code{K} turns out to be, which is why
+\code{\link[=pooling_diagnostics]{pooling_diagnostics()}} uses it: it only ever reads \verb{$K}, to report
+pooling precision, never the enumerated configs themselves.
 }

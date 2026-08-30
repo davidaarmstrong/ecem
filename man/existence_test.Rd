@@ -12,7 +12,7 @@ existence_test(
   cutpoint_specs = NULL,
   estimator = NULL,
   covariates = NULL,
-  diagnostics = NULL,
+  min_n_per_arm = NULL,
   n_boot = 200,
   stat_fun = stats::median,
   progress = interactive()
@@ -21,65 +21,54 @@ existence_test(
 \arguments{
 \item{data}{A data frame, the same one used to produce \code{draws}. Needed
 again here because the test reruns the full pipeline on resampled
-data redrawn from \code{cutpoint_specs} -- unless \code{diagnostics} is
-supplied, in which case its cached bootstrap is used instead and
-\code{data} is not touched.}
+data redrawn from \code{cutpoint_specs}.}
 
 \item{draws}{An object of class \code{"ecem_draws"}, as returned by
 \code{\link[=run_M_draws]{run_M_draws()}}.}
 
 \item{treat_var, outcome_var, cutpoint_specs}{\code{NULL} (the default) to
 recover these from \code{draws}'s attributes; supply them explicitly to
-override, or if \code{draws} doesn't carry them. Ignored if \code{diagnostics}
-is supplied.}
+override, or if \code{draws} doesn't carry them.}
 
 \item{estimator, covariates}{\code{NULL} (the default) to recover these from
 \code{draws}'s attributes too (see \code{\link[=run_M_draws]{run_M_draws()}}), so the bootstrap
-refits draws the same way \code{draws} was actually computed. Ignored if
-\code{diagnostics} is supplied (the cached bootstrap was already computed
-consistently with \code{draws} when \code{\link[=pooling_diagnostics]{pooling_diagnostics()}} made it).}
+refits draws the same way \code{draws} was actually computed.}
 
-\item{diagnostics}{\code{NULL} (the default) to bootstrap fresh, or the
-result of \link[=pooling_diagnostics]{pooling_diagnostics(data, draws)} to
-reuse its cached bootstrap (see Details). Must have been run on this
-same \code{draws} -- checked by comparing cached and current \code{tau_hat}
-values.}
+\item{min_n_per_arm}{\code{NULL} (the default) to recover this from \code{draws}'s
+\code{"min_n_per_arm"} attribute too (falling back to \code{1}, i.e. CEM's usual
+any-unit-per-arm retention rule, if \code{draws} doesn't carry one -- e.g.
+older cached \code{draws} objects predating this parameter), so the
+bootstrap prunes matched strata the same way \code{draws} was actually
+computed.}
 
 \item{n_boot}{Integer; number of bootstrap replicates. Kept small in
-examples for speed; use at least a few hundred for actual inference.
-Ignored if \code{diagnostics} is supplied (its \code{n_boot} is used instead).}
+examples for speed; use at least a few hundred for actual inference.}
 
 \item{stat_fun}{Summary statistic applied to the draws' \code{tau_hat}
 values, both observed and under each bootstrap replicate's null.
-Defaults to \code{\link[stats:median]{stats::median()}}. Can be freely changed even when reusing
-a cached bootstrap via \code{diagnostics}, since the cache stores each
-replicate's raw per-draw \code{tau_hat}s, unsummarized.}
+Defaults to \code{\link[stats:median]{stats::median()}}.}
 
 \item{progress}{Logical; show a text progress bar over the \code{n_boot}
 bootstrap replicates (each of which reruns all \code{M} draws, one per
 draw's own null). Defaults to \code{interactive()}, so it stays quiet in
 scripts, \verb{R CMD check}, and \code{testthat} runs. Written to \code{stderr()} via
 \code{\link[utils:txtProgressBar]{utils::txtProgressBar()}}, so it never interferes with captured
-\code{stdout} output. Ignored if \code{diagnostics} is supplied (nothing to
-show progress on).}
+\code{stdout} output.}
 }
 \value{
 An object of class \code{"ecem_existence_test"} (see
 \code{\link[=print.ecem_existence_test]{print.ecem_existence_test()}}): a list with elements \code{observed_stat},
 \code{p_value}, \code{null_stats} (the full vector of the statistic under the
-null), \code{M} (number of draws), \code{n_boot}, \code{stat_label} (a short
-description of \code{stat_fun}, for printing), and \code{reused_bootstrap}
-(logical, whether \code{diagnostics}'s cached bootstrap was used).
+null), \code{M} (number of draws), \code{n_boot}, and \code{stat_label} (a short
+description of \code{stat_fun}, for printing).
 }
 \description{
 A fallback for when \code{\link[=congeniality_test]{congeniality_test()}} rejects and pooling via
 Rubin's rules is no longer trusted. For each draw \code{m} separately, forces
-that draw's \emph{own} null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}) --
-deliberately different from \code{\link[=excess_variance_test]{excess_variance_test()}}, which forces one
-shared null across all draws. Resamples rows once per replicate (the
-same resampled rows used for every draw within that replicate) and
-reruns the full pipeline for each draw on its own null-consistent,
-resampled outcome.
+that draw's \emph{own} null (zero effect: \eqn{Y^*_m = Y - \hat\tau_m D}).
+Resamples rows once per replicate (the same resampled rows used for
+every draw within that replicate) and reruns the full pipeline for each
+draw on its own null-consistent, resampled outcome.
 }
 \details{
 \code{treat_var}, \code{outcome_var}, and \code{cutpoint_specs} are recovered from
@@ -88,15 +77,10 @@ resampled outcome.
 \code{existence_test(data, draws)}. Pass any of the three explicitly to
 override, or if \code{draws} doesn't carry them.
 
-If you already ran \code{\link[=pooling_diagnostics]{pooling_diagnostics()}} on this \code{draws} (e.g. because
-its congeniality test rejected and this is the recommended fallback),
-pass that result as \code{diagnostics} (with \code{run_existence_cache = TRUE},
-the default) to reuse its bootstrap instead of rerunning one from
-scratch -- matching doesn't depend on the outcome at all, so the
-matches it already did can be refit under this test's own-draw null for
-free instead of matching a second time. This turns \code{existence_test()}
-from another \code{n_boot}-replicate bootstrap into an essentially instant
-lookup.
+Each call bootstraps fresh (\code{n_boot} replicates, each rerunning all \code{M}
+draws) -- there is nothing to precompute or reuse from
+\code{\link[=pooling_diagnostics]{pooling_diagnostics()}}, which does not itself resample (see its
+documentation for why).
 }
 \examples{
 \donttest{
@@ -105,10 +89,6 @@ pop <- simulate_population(N = 500)
 specs <- list(age = list(c(25, 33), c(60, 68)), educ = c(12, 16))
 draws <- run_M_draws(pop, "D", "Y", specs, M = 10)
 existence_test(pop, draws, n_boot = 20)
-
-## Reusing an already-run pooling_diagnostics() bootstrap instead:
-diag <- pooling_diagnostics(pop, draws, n_boot = 20)
-existence_test(pop, draws, diagnostics = diag)
 }
 
 }

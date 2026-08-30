@@ -24,8 +24,12 @@ pooled <- pool_draws(draws)
 diag <- pooling_diagnostics(pop, draws, pooled = pooled)
 diag
 
-if (diag$excess_variance$p_value < diag$alpha) {
-  existence_test(pop, draws, diagnostics = diag)
+## diag$congeniality is a named list, one result per position tested
+## (low/mid/high by default) -- congeniality is treated as having failed
+## if *any* tested position rejects.
+cg_p <- vapply(diag$congeniality, function(r) r$p_value, numeric(1))
+if (!is.null(diag$congeniality) && isTRUE(any(cg_p < diag$alpha, na.rm = TRUE))) {
+  existence_test(pop, draws)
 }
 
 label_diagnostics(pop, draws)
@@ -55,17 +59,16 @@ flat <- flatness_test_XE(pop, "D", "Y", "age", c(20, 75))
 cat("\nPre-matching flatness test on age [illustrative lm-interaction version]: p =",
     round(flat$p_value, 4), "\n")
 
-## n_boot is kept small below purely so the demo runs quickly; use
-## something like 500-1000 for actual inference. pooling_diagnostics()
-## bundles the flatness/excess-variance/retention checks above into one
-## call and, as a side effect, caches its bootstrap matches for
-## existence_test() to reuse below -- see its `diagnostics` argument.
-cat("\nRunning pooling_diagnostics() (n_boot = 50)...\n")
-diag <- pooling_diagnostics(pop, draws, n_boot = 50)
+## pooling_diagnostics() bundles the flatness/congeniality/retention
+## checks above into one call -- it never bootstraps, so it's cheap
+## regardless of how it's called.
+cat("\nRunning pooling_diagnostics()...\n")
+diag <- pooling_diagnostics(pop, draws)
 print(diag)
 
-## Reuses diag's cached bootstrap instead of rerunning n_boot x M matches
-## from scratch -- essentially instant.
-cat("\nRunning Simonsohn-style existence test, reusing diag's bootstrap...\n")
-ex <- existence_test(pop, draws, diagnostics = diag)
+## existence_test() always bootstraps fresh. n_boot is kept small here
+## purely so the demo runs quickly; use something like 500-1000 for actual
+## inference.
+cat("\nRunning Simonsohn-style existence test (n_boot = 50)...\n")
+ex <- existence_test(pop, draws, n_boot = 50)
 print(ex)

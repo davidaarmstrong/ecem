@@ -4,7 +4,7 @@
 \alias{elicit_and_match}
 \title{Resolve cutpoints, coarsen, match, and prune for one draw}
 \usage{
-elicit_and_match(data, treat_var, cutpoint_specs)
+elicit_and_match(data, treat_var, cutpoint_specs, min_n_per_arm = 1)
 }
 \arguments{
 \item{data}{A data frame containing \code{treat_var} and every covariate
@@ -16,6 +16,32 @@ in \code{data}.}
 \item{cutpoint_specs}{A named list, one entry per covariate to include
 in the matching, in the format described in
 \code{\link[=draw_cutpoints_for_var]{draw_cutpoints_for_var()}}.}
+
+\item{min_n_per_arm}{Integer; minimum number of treated and control
+units a stratum needs to be retained. Defaults to \code{1}, i.e. the
+original rule (a stratum survives if it has \emph{any} unit in each arm)
+-- every existing caller is unaffected unless it opts into a larger
+value. Real, unrounded covariates can produce strata with just one or
+two units in one arm, especially once more than one covariate is
+elicited and their bins are crossed; such a stratum still counts as
+"matched" under the default rule, but contributes an extremely
+high-leverage, low-information stratum to whatever's estimated on top
+of it (e.g. \code{\link[=congeniality_test]{congeniality_test()}}'s treatment-by-bin interaction can
+become numerically unidentifiable -- see its documentation). Raising
+\code{min_n_per_arm} trims those thin strata at the source, the same way
+\code{has_treat & has_control} already trims strata with \emph{zero} units in
+an arm -- this is a stricter version of the identical mechanism, not
+a new one. Because the FSATT-ATT/ATT-ATE covariance identities are
+proven for any well-defined 0/1 retention indicator (not specifically
+the \verb{>= 1}-per-arm rule), a larger \code{min_n_per_arm} still targets a
+coherent FSATT -- just a more conditional one, restricted to a
+better-supported region of the covariate space. Applying it
+consistently wherever retention is decided (here, and hence in
+\code{\link[=run_draw]{run_draw()}}, \code{\link[=run_M_draws]{run_M_draws()}}, \code{\link[=congeniality_test]{congeniality_test()}}, and the
+bootstrap-based diagnostics) keeps that FSATT the same one throughout
+a given analysis, rather than letting the point estimate and a
+diagnostic silently disagree about which sample they're each
+describing.}
 }
 \value{
 A list with elements: \code{retained_idx} (row indices of \code{data}

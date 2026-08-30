@@ -10,7 +10,9 @@ congeniality_test(
   outcome_var,
   cutpoint_specs,
   position = c("mid", "low", "high"),
-  fixed_cutpoints = NULL
+  fixed_cutpoints = NULL,
+  min_n_per_arm = 1,
+  vcov_type = c("HC4", "HC4m", "HC3", "HC5", "HC1", "HC0")
 )
 }
 \arguments{
@@ -34,16 +36,52 @@ sensitivity check; this function itself only ever tests one.}
 \item{fixed_cutpoints}{Optional named list, one entry per elicited
 covariate, of explicit numeric cutpoint vectors to use instead of
 deriving them from \code{position}.}
+
+\item{min_n_per_arm}{Integer, default \code{1}; passed straight through to
+\code{\link[=elicit_and_match]{elicit_and_match()}} -- see its documentation for the full rationale.
+Raising this is the more targeted fix for the same numerically
+unstable-leverage problem \code{vcov_type} addresses when a treatment-by-
+bin cell is a near-singleton: it removes the offending cell from the
+matched sample entirely (a common-support restriction) rather than
+asking a different sandwich correction to cope with it. If you also
+want the headline point estimate (from \code{\link[=run_M_draws]{run_M_draws()}}) to describe
+the \emph{same} sample this test does, pass the same \code{min_n_per_arm} to
+both rather than only here.}
+
+\item{vcov_type}{\code{"HC4"} (default), \code{"HC4m"}, \code{"HC3"}, \code{"HC5"},
+\code{"HC1"}, or \code{"HC0"} -- which heteroskedasticity-consistent sandwich
+correction \code{\link[sandwich:vcovHC]{sandwich::vcovHC()}} applies. HC4 is the validated default
+(see the paper's Appendix for the comparison against HC1/HC3/HC4m/HC5
+that led to it), clean across every simulated condition checked. On
+real, unrounded data, though, a treatment-by-bin cell can end up with
+only one or two units -- rare, but common enough in application-sized
+samples -- pushing that observation's leverage (its hat value) close
+to, or exactly at, 1. HC4's correction divides by \code{(1 - h_i)^delta_i}
+for each observation, which is numerically unstable (and undefined at
+\code{h_i = 1}) regardless of the \code{delta_i} leverage-adaptivity cap --
+\code{sandwich::vcovHC()} warns exactly when this happens
+("HC4 covariances are numerically unstable for hat values close to
+1..."). HC4m (Cribari-Neto & Souza-Vasconcellos, 2007) was
+developed specifically to stay bounded in this regime and is the
+principled thing to switch to if you see that warning on your own
+data, rather than a workaround -- it's already part of the same
+HC1/HC3/HC4/HC4m/HC5 family comparison the paper's appendix reports.
+Worth also just looking at which bin those high-leverage observations
+fall into (e.g. \code{hatvalues(cg$model)}) -- a near-singleton
+treatment-by-bin cell is itself worth knowing about independent of
+which correction handles it numerically.}
 }
 \value{
-A list with elements \code{p_value} (from the HC4-robust Wald
-F-test; \code{NA} if the matched sample is empty or too small to identify
-the interaction model -- the same graceful-failure convention
-\code{\link[=fit_effect]{fit_effect()}} uses for an aliased coefficient, rather than
-erroring), \code{model} (the fitted interaction model), \code{n} (matched
+A list with elements \code{p_value} (from the \code{vcov_type}-robust
+Wald F-test; \code{NA} if the matched sample is empty or too small to
+identify the interaction model -- the same graceful-failure
+convention \code{\link[=fit_effect]{fit_effect()}} uses for an aliased coefficient, rather
+than erroring), \code{model} (the fitted interaction model), \code{n} (matched
 sample size), \code{n_bins} (levels of the joint bin factor tested),
 \code{elicited_vars} (which covariates were tested), \code{fixed_cutpoints}
-(the cutpoints actually used, named by covariate), and \code{position}.
+(the cutpoints actually used, named by covariate), \code{position},
+\code{vcov_type} (which correction was actually used), and
+\code{min_n_per_arm} (the retention threshold actually used).
 }
 \description{
 Tests the condition Rubin's-rules pooling actually needs (the paper's
@@ -54,7 +92,7 @@ range of the coarsened covariate(s), rather than
 sample).
 }
 \details{
-This supersedes \code{\link[=excess_variance_test]{excess_variance_test()}}, the earlier, resampling-based
+This supersedes an earlier, resampling-based excess-variance-bootstrap
 design the paper's Appendix documents as invalid -- CEM's discrete
 matching solution is destabilized by resampling with replacement
 (Abadie & Imbens 2008's bootstrap-inconsistency result for matching

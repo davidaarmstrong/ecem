@@ -28,6 +28,43 @@ test_that("elicit_and_match falls back to one stratum when nothing coarsens", {
   expect_length(m$retained_idx, 8)
 })
 
+test_that("elicit_and_match's min_n_per_arm defaults to CEM's usual any-unit-per-arm rule", {
+  ## min_n_per_arm = 1 (the default) must reproduce exactly what
+  ## elicit_and_match() did before this parameter existed: retain any
+  ## stratum with at least one unit in each arm.
+  data <- make_toy_data()
+  m1      <- elicit_and_match(data, "D", list(x = c(7)))
+  m1_default <- elicit_and_match(data, "D", list(x = c(7)), min_n_per_arm = 1)
+  expect_identical(m1$retained_idx, m1_default$retained_idx)
+  expect_identical(m1$stratum, m1_default$stratum)
+})
+
+test_that("elicit_and_match's min_n_per_arm prunes strata with too few units in either arm", {
+  ## Hand-built so the two strata have different per-arm sample sizes:
+  ## x <= 7 has 3 treated/3 control, x > 7 has only 1 treated/1 control --
+  ## raising min_n_per_arm should prune the thin stratum first, then both.
+  data <- data.frame(
+    x = c(1, 2, 3, 4, 5, 6, 11, 12),
+    D = c(1, 1, 1, 0, 0, 0,  1,  0),
+    Y = c(1, 2, 3, 4, 5, 6,  7,  8)
+  )
+  specs <- list(x = c(7))
+
+  m1 <- elicit_and_match(data, "D", specs, min_n_per_arm = 1)
+  expect_length(m1$retained_idx, 8)
+  expect_equal(nlevels(m1$stratum), 2)
+
+  m2 <- elicit_and_match(data, "D", specs, min_n_per_arm = 2)
+  ## Only the x <= 7 stratum (3 treated/3 control) clears the bar; the
+  ## x > 7 stratum (1 treated/1 control) is pruned.
+  expect_setequal(m2$retained_idx, 1:6)
+  expect_equal(nlevels(m2$stratum), 1)
+
+  m4 <- elicit_and_match(data, "D", specs, min_n_per_arm = 4)
+  ## Neither stratum has 4 per arm -- everything is pruned.
+  expect_length(m4$retained_idx, 0)
+})
+
 test_that("fit_effect's mean_diff estimator recovers the known pooled ATT and variance", {
   data <- make_toy_data()
   m <- elicit_and_match(data, "D", list(x = c(7)))
@@ -73,6 +110,45 @@ test_that("fit_effect's regression estimator matches an independently hand-compu
   fit <- fit_effect(data, "D", "Y", m, estimator = "regression")
   expect_equal(fit$tau_hat, 7.50990099009901, tolerance = 1e-6)
   expect_equal(fit$var_hat, 0.10344574061366504, tolerance = 1e-6)
+})
+
+test_that("fit_effect's vcov_type defaults to \"classical\" and reproduces the original (pre-vcov_type) behavior", {
+  data <- make_toy_data()
+  m <- elicit_and_match(data, "D", list(x = c(7)))
+  fit_default   <- fit_effect(data, "D", "Y", m, estimator = "regression")
+  fit_classical <- fit_effect(data, "D", "Y", m, estimator = "regression", vcov_type = "classical")
+  expect_identical(fit_default$tau_hat, fit_classical$tau_hat)
+  expect_identical(fit_default$var_hat, fit_classical$var_hat)
+})
+
+test_that("fit_effect's HC vcov_type changes var_hat but never tau_hat, and matches a direct sandwich/lmtest reference", {
+  data <- make_toy_data()
+  m <- elicit_and_match(data, "D", list(x = c(7)))
+  fit_classical <- fit_effect(data, "D", "Y", m, estimator = "regression", vcov_type = "classical")
+  fit_hc4       <- fit_effect(data, "D", "Y", m, estimator = "regression", vcov_type = "HC4")
+
+  ## tau_hat is the same weighted-least-squares coefficient regardless of
+  ## which variance estimator is applied to it afterward.
+  expect_equal(fit_hc4$tau_hat, fit_classical$tau_hat)
+  ## var_hat, on the other hand, should actually differ between the
+  ## classical and HC4 variance estimators on this data (not a tautology --
+  ## it's a real check that vcov_type is actually doing something).
+  expect_false(isTRUE(all.equal(fit_hc4$var_hat, fit_classical$var_hat)))
+
+  idx <- m$retained_idx
+  w <- cem_weights(data$D[idx], m$stratum)
+  ref <- stats::lm(Y ~ D + x, data = data[idx, ], weights = w)
+  co  <- lmtest::coeftest(ref, vcov = sandwich::vcovHC(ref, type = "HC4"))
+  expect_equal(fit_hc4$var_hat, unname(co["D", "Std. Error"])^2)
+})
+
+test_that("fit_effect's vcov_type is ignored for mean_diff", {
+  data <- make_toy_data()
+  m <- elicit_and_match(data, "D", list(x = c(7)))
+  fit_classical <- fit_effect(data, "D", "Y", m, estimator = "mean_diff", vcov_type = "classical")
+  fit_hc4       <- fit_effect(data, "D", "Y", m, estimator = "mean_diff", vcov_type = "HC4")
+  expect_identical(fit_classical$tau_hat, fit_hc4$tau_hat)
+  expect_identical(fit_classical$var_hat, fit_hc4$var_hat)
 })
 
 test_that("fit_effect's regression estimator defaults covariates to the non-excluded spec entries", {
@@ -158,6 +234,34 @@ test_that("run_M_draws's estimator/covariates arguments reach fit_effect", {
   draws_reg <- run_M_draws(data, "D", "Y", list(x = c(7)), M = 2, estimator = "regression")
   expect_true(all(vapply(draws_md,  function(d) d$tau_hat, numeric(1)) == 5.5))
   expect_true(all(vapply(draws_reg, function(d) d$tau_hat, numeric(1)) != 5.5))
+})
+
+test_that("run_draw's vcov_type argument reaches fit_effect", {
+  data <- make_toy_data()
+  d_classical <- run_draw(data, "D", "Y", list(x = c(7)), vcov_type = "classical")
+  d_hc4       <- run_draw(data, "D", "Y", list(x = c(7)), vcov_type = "HC4")
+  expect_equal(d_classical$tau_hat, d_hc4$tau_hat)
+  expect_false(isTRUE(all.equal(d_classical$var_hat, d_hc4$var_hat)))
+})
+
+test_that("run_M_draws's vcov_type argument reaches every draw and defaults to classical", {
+  data <- make_toy_data()
+  draws_default <- run_M_draws(data, "D", "Y", list(x = c(7)), M = 2)
+  draws_hc4     <- run_M_draws(data, "D", "Y", list(x = c(7)), M = 2, vcov_type = "HC4")
+
+  ## x = c(7) is a fixed spec, so every draw within a run is identical.
+  expect_equal(attr(draws_default, "vcov_type"), "classical")
+  expect_equal(attr(draws_hc4, "vcov_type"), "HC4")
+  expect_equal(draws_default[[1]]$tau_hat, draws_hc4[[1]]$tau_hat)
+  expect_false(isTRUE(all.equal(draws_default[[1]]$var_hat, draws_hc4[[1]]$var_hat)))
+})
+
+test_that("run_M_draws carries min_n_per_arm as an attribute, defaulting to 1", {
+  data <- make_toy_data()
+  draws_default <- run_M_draws(data, "D", "Y", list(x = c(7)), M = 2)
+  draws_strict  <- run_M_draws(data, "D", "Y", list(x = c(7)), M = 2, min_n_per_arm = 2)
+  expect_equal(attr(draws_default, "min_n_per_arm"), 1)
+  expect_equal(attr(draws_strict, "min_n_per_arm"), 2)
 })
 
 test_that("run_M_draws switches to exact enumeration when K is small enough", {
