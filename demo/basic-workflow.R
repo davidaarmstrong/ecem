@@ -26,9 +26,13 @@ diag
 
 ## diag$congeniality is a named list, one result per position tested
 ## (low/mid/high by default) -- congeniality is treated as having failed
-## if *any* tested position rejects.
-cg_p <- vapply(diag$congeniality, function(r) r$p_value, numeric(1))
-if (!is.null(diag$congeniality) && isTRUE(any(cg_p < diag$alpha, na.rm = TRUE))) {
+## if *any* tested position rejects, after a multiple-testing correction
+## across however many positions were tested (congeniality_correction =
+## "bonferroni" by default; the raw, uncorrected rule runs at roughly
+## twice its nominal size -- see pooling_diagnostics()'s Details).
+## diag$congeniality_reject_any is that already-corrected verdict, so
+## there's no need to recompute it from the individual p-values here.
+if (isTRUE(diag$congeniality_reject_any)) {
   existence_test(pop, draws)
 }
 

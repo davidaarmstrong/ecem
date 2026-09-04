@@ -79,6 +79,54 @@ test_that("pooling_diagnostics's congeniality_min_n_per_arm defaults to 1 and is
   expect_equal(diag_strict$K, diag$K)
 })
 
+test_that("pooling_diagnostics defaults congeniality_correction to bonferroni and returns adjusted p-values/verdict", {
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 8), c(9, 20)))
+  draws <- run_M_draws(data, "D", "Y", specs, M = 5)
+  diag <- pooling_diagnostics(data, draws)
+
+  expect_equal(diag$congeniality_correction, "bonferroni")
+  expect_named(diag$congeniality_p_adjusted, c("low", "mid", "high"))
+
+  raw_p  <- vapply(diag$congeniality, function(r) r$p_value, numeric(1))
+  non_na <- !is.na(raw_p)
+  expect_equal(unname(diag$congeniality_p_adjusted[non_na]),
+               unname(stats::p.adjust(raw_p[non_na], method = "bonferroni")))
+  expect_equal(diag$congeniality_reject_any,
+               if (!any(non_na)) NA else isTRUE(any(diag$congeniality_p_adjusted[non_na] < diag$alpha)))
+})
+
+test_that("pooling_diagnostics's congeniality_correction = 'none' reproduces the raw, unadjusted p-values", {
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 8), c(9, 20)))
+  draws <- run_M_draws(data, "D", "Y", specs, M = 5)
+  diag <- pooling_diagnostics(data, draws, congeniality_correction = "none")
+
+  raw_p <- vapply(diag$congeniality, function(r) r$p_value, numeric(1))
+  expect_equal(unname(diag$congeniality_p_adjusted), unname(raw_p))
+})
+
+test_that("pooling_diagnostics's congeniality_correction is a no-op when only one position is tested", {
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 8), c(9, 20)))
+  draws <- run_M_draws(data, "D", "Y", specs, M = 5)
+
+  diag_b <- pooling_diagnostics(data, draws, congeniality_position = "high", congeniality_correction = "bonferroni")
+  diag_h <- pooling_diagnostics(data, draws, congeniality_position = "high", congeniality_correction = "holm")
+  diag_n <- pooling_diagnostics(data, draws, congeniality_position = "high", congeniality_correction = "none")
+
+  expect_equal(diag_b$congeniality_p_adjusted[["high"]], diag_b$congeniality$high$p_value)
+  expect_equal(diag_h$congeniality_p_adjusted, diag_b$congeniality_p_adjusted)
+  expect_equal(diag_n$congeniality_p_adjusted, diag_b$congeniality_p_adjusted)
+})
+
+test_that("pooling_diagnostics errors on an invalid congeniality_correction", {
+  data <- make_toy_data()
+  specs <- list(x = list(c(0, 20)))
+  draws <- run_M_draws(data, "D", "Y", specs, M = 5)
+  expect_error(pooling_diagnostics(data, draws, congeniality_correction = "sidak"), "should be one of")
+})
+
 test_that("pooling_diagnostics skips congeniality gracefully when nothing is elicited", {
   data <- make_toy_data()
   specs <- list(x = c(7))  # fixed only, nothing elicited
@@ -145,13 +193,21 @@ test_that("pooling_diagnostics computes pooled itself when not supplied", {
 ## cg_p is normally a single (unnamed) p-value, tested at "mid" only; pass
 ## a named vector/list keyed by position (e.g. c(low = 0.3, mid = 0.1,
 ## high = 0.005)) to build a multi-position fixture instead.
+## cg_correction mirrors pooling_diagnostics()'s congeniality_correction
+## ("bonferroni" by default, matching the package default) -- this fixture
+## builder computes congeniality_p_adjusted/congeniality_reject_any the
+## same way pooling_diagnostics() itself does (via stats::p.adjust()), so
+## fixtures stay consistent with real output without duplicating that
+## logic differently here.
 make_fake_diag <- function(flat_p, cg_p, cg_n = 100, cg_n_bins = 3,
                             cg_vcov_type = NULL, cg_min_n_per_arm = NULL,
+                            cg_correction = "bonferroni",
                             retention = list(gap = c(0.01, -0.02), mean = -0.005, sd = 0.02),
                             exact = FALSE, M = 10, K = NULL, alpha = 0.05) {
-  congeniality <- if (is.null(cg_p)) {
-    NULL
-  } else {
+  congeniality <- NULL
+  congeniality_p_adjusted <- NULL
+  congeniality_reject_any <- NULL
+  if (!is.null(cg_p)) {
     if (is.null(names(cg_p))) {
       cg_p <- stats::setNames(list(cg_p), "mid")
     }
@@ -161,12 +217,27 @@ make_fake_diag <- function(flat_p, cg_p, cg_n = 100, cg_n_bins = 3,
            vcov_type = cg_vcov_type, min_n_per_arm = cg_min_n_per_arm)
     })
     names(res) <- names(cg_p)
-    res
+    congeniality <- res
+
+    raw_p <- vapply(congeniality, function(r) r$p_value, numeric(1))
+    congeniality_p_adjusted <- stats::setNames(rep(NA_real_, length(raw_p)), names(raw_p))
+    non_na <- !is.na(raw_p)
+    if (any(non_na)) {
+      congeniality_p_adjusted[non_na] <- stats::p.adjust(raw_p[non_na], method = cg_correction)
+    }
+    congeniality_reject_any <- if (!any(non_na)) {
+      NA
+    } else {
+      isTRUE(any(congeniality_p_adjusted[non_na] < alpha))
+    }
   }
   structure(
     list(
-      flatness     = list(age = list(p_value = flat_p, model = NULL, n = 100)),
-      congeniality = congeniality,
+      flatness                = list(age = list(p_value = flat_p, model = NULL, n = 100)),
+      congeniality             = congeniality,
+      congeniality_correction  = cg_correction,
+      congeniality_p_adjusted  = congeniality_p_adjusted,
+      congeniality_reject_any  = congeniality_reject_any,
       retention    = retention,
       pooled       = NULL,
       M            = M,
@@ -233,6 +304,37 @@ test_that("print.ecem_pooling_diagnostics: congeniality rejects at only one of s
   expect_match(out, "FSATT DRIFTS across the elicited range")
   expect_match(out, "Overall: REJECTS -- drift detected at position\\(s\\) \"high\"")
   expect_match(out, "Congeniality test rejects: congeniality has failed")
+})
+
+test_that("print.ecem_pooling_diagnostics shows the adjusted p-value alongside the raw one by default", {
+  d <- make_fake_diag(flat_p = 0.5, cg_p = c(low = 0.4, mid = 0.3, high = 0.006))
+  out <- paste(capture.output(print(d)), collapse = "\n")
+  ## high: raw p = 0.006, bonferroni-adjusted (x3) = 0.018.
+  expect_match(out, "p = 0.006.*bonferroni-adjusted: p = 0.018", perl = TRUE)
+})
+
+test_that("print.ecem_pooling_diagnostics with congeniality_correction = 'none' reproduces the old uncorrected behavior", {
+  d <- make_fake_diag(flat_p = 0.5, cg_p = c(low = 0.4, mid = 0.3, high = 0.006), cg_correction = "none")
+  out <- paste(capture.output(print(d)), collapse = "\n")
+  expect_false(grepl("adjusted", out))
+  expect_match(out, "Overall: REJECTS -- drift detected at position\\(s\\) \"high\"")
+})
+
+test_that("print.ecem_pooling_diagnostics: holm rejects more positions than bonferroni at the same p-values", {
+  ## low = .001, mid = .02, high = .03 -- bonferroni (x3) only clears low
+  ## (.003 < .05; mid -> .06, high -> .09, neither < .05), while holm's
+  ## step-down rejects all three (adjusted: .003, .04, .04, all < .05).
+  ## This is exactly the power difference documented in
+  ## pooling_diagnostics()'s congeniality_correction argument.
+  cg_p <- c(low = 0.001, mid = 0.02, high = 0.03)
+
+  d_bonf <- make_fake_diag(flat_p = 0.5, cg_p = cg_p, cg_correction = "bonferroni")
+  out_bonf <- paste(capture.output(print(d_bonf)), collapse = "\n")
+  expect_match(out_bonf, "Overall: REJECTS -- drift detected at position\\(s\\) \"low\"")
+
+  d_holm <- make_fake_diag(flat_p = 0.5, cg_p = cg_p, cg_correction = "holm")
+  out_holm <- paste(capture.output(print(d_holm)), collapse = "\n")
+  expect_match(out_holm, "\"low\", \"mid\", \"high\"")
 })
 
 test_that("print.ecem_pooling_diagnostics: all tested positions degenerate to NA -> no verdict, not either outcome", {

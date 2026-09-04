@@ -17,7 +17,16 @@
 #' be sitting where drift is weak. Congeniality is treated as having
 #' failed if *any* tested position rejects -- catching drift anywhere in
 #' the elicited range is the whole point of testing more than one
-#' position.
+#' position -- but testing three positions and rejecting if any one clears
+#' `alpha` inflates the false-rejection rate under the true null relative
+#' to `alpha`, since it's an uncorrected union of (correlated, but not
+#' redundant) tests. Simulation checked this directly: at the null, the
+#' raw three-position "any rejects" rule rejected roughly twice as often
+#' as its nominal rate; a Bonferroni correction across however many
+#' positions were actually tested brought the empirical rate back within
+#' Monte Carlo noise of nominal. `congeniality_correction` (default
+#' `"bonferroni"`) applies that correction to the combination rule; see
+#' its own documentation for the alternatives.
 #'
 #' `treat_var`, `outcome_var`, and `cutpoint_specs` are recovered from
 #' `draws` itself by default -- [run_M_draws()] stores them as attributes
@@ -84,6 +93,20 @@
 #'   before it's used for the congeniality test, e.g. to avoid
 #'   `sandwich::vcovHC()` instability at singleton/near-singleton cells --
 #'   see [congeniality_test()]'s documentation for why.
+#' @param congeniality_correction `"bonferroni"` (default), `"holm"`, or
+#'   `"none"` -- the multiple-testing correction applied, via
+#'   [stats::p.adjust()], to each tested position's p-value before the
+#'   "reject if any position rejects" combination rule is evaluated (see
+#'   Details for why this matters: the uncorrected rule runs at roughly
+#'   twice its nominal size). `"bonferroni"` divides `alpha` by the number
+#'   of positions actually tested (so a single-position call is
+#'   unaffected -- there's nothing to correct for). `"holm"` is uniformly
+#'   at least as powerful (step-down rather than a flat threshold) while
+#'   still controlling the family-wise rate, at the cost of a slightly
+#'   less transparent per-position threshold. `"none"` restores the raw,
+#'   uncorrected rule (not recommended when testing more than one
+#'   position, but available for comparison). Ignored when only one
+#'   position is tested, or when congeniality isn't run at all.
 #' @param run_retention Logical; whether to compute the retention-
 #'   interaction (`FSATT_m - ATT`) diagnostic. Defaults to `TRUE`; it is
 #'   cheap (no bootstrapping, no rematching) and is exactly what the
@@ -100,7 +123,14 @@
 #'   elicited, else a named list of [congeniality_test()] results, one per
 #'   position actually tested, named by that position -- e.g.
 #'   `congeniality$high` -- even when only one position was requested),
-#'   `retention` (`NULL` if
+#'   `congeniality_correction` (the method actually used, echoing the
+#'   argument), `congeniality_p_adjusted` (`NULL` alongside `congeniality`,
+#'   else a named numeric vector, one adjusted p-value per tested
+#'   position, `NA` wherever the raw p-value was `NA`), `congeniality_reject_any`
+#'   (`NULL` alongside `congeniality`; else `NA` if every tested position's
+#'   p-value was `NA`, else `TRUE`/`FALSE` -- whether any position's
+#'   *adjusted* p-value cleared `alpha`, i.e. the actual combination-rule
+#'   verdict), `retention` (`NULL` if
 #'   `run_retention = FALSE`, else a list with `gap`, `mean`, `sd`),
 #'   `pooled`, `M`, `K` (from [count_achievable_configs()], used by
 #'   [print.ecem_pooling_diagnostics()] to decide whether recommending
@@ -125,10 +155,12 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
                                  congeniality_position = c("low", "mid", "high"),
                                  congeniality_vcov_type = "HC4",
                                  congeniality_min_n_per_arm = 1,
+                                 congeniality_correction = c("bonferroni", "holm", "none"),
                                  run_retention = TRUE,
                                  alpha = 0.05) {
   congeniality_position <- match.arg(congeniality_position, choices = c("low", "mid", "high"),
                                       several.ok = TRUE)
+  congeniality_correction <- match.arg(congeniality_correction, choices = c("bonferroni", "holm", "none"))
   if (is.null(treat_var))      treat_var      <- attr(draws, "treat_var")
   if (is.null(outcome_var))    outcome_var    <- attr(draws, "outcome_var")
   if (is.null(cutpoint_specs)) cutpoint_specs <- attr(draws, "cutpoint_specs")
@@ -156,6 +188,8 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
   M <- length(draws)
 
   congeniality <- NULL
+  congeniality_p_adjusted <- NULL
+  congeniality_reject_any <- NULL
   if (run_congeniality && length(xe_ranges) > 0) {
     congeniality <- lapply(congeniality_position, function(pos) {
       congeniality_test(data, treat_var, outcome_var, cutpoint_specs,
@@ -164,6 +198,25 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
                          min_n_per_arm = congeniality_min_n_per_arm)
     })
     names(congeniality) <- congeniality_position
+
+    ## The "reject if any tested position rejects" combination rule is an
+    ## uncorrected union of (correlated, but not redundant) tests unless
+    ## adjusted here -- see this function's Details for the simulation
+    ## evidence. p.adjust(method = "none") is a documented no-op, so this
+    ## same code path handles all three congeniality_correction choices
+    ## without a special case. NA raw p-values (degenerate matched sample
+    ## at that position) are left NA rather than passed to p.adjust().
+    cg_p <- vapply(congeniality, function(r) r$p_value, numeric(1))
+    congeniality_p_adjusted <- stats::setNames(rep(NA_real_, length(cg_p)), names(cg_p))
+    non_na <- !is.na(cg_p)
+    if (any(non_na)) {
+      congeniality_p_adjusted[non_na] <- stats::p.adjust(cg_p[non_na], method = congeniality_correction)
+    }
+    congeniality_reject_any <- if (!any(non_na)) {
+      NA
+    } else {
+      isTRUE(any(congeniality_p_adjusted[non_na] < alpha))
+    }
   }
 
   retention <- NULL
@@ -189,14 +242,17 @@ pooling_diagnostics <- function(data, draws, treat_var = NULL, outcome_var = NUL
   K <- count_achievable_configs(data, cutpoint_specs, count_only = TRUE)$K
 
   out <- list(
-    flatness     = flatness,
-    congeniality = congeniality,
-    retention    = retention,
-    pooled       = pooled,
-    M            = M,
-    K            = K,
-    exact        = isTRUE(attr(draws, "exact")),
-    alpha        = alpha
+    flatness                = flatness,
+    congeniality            = congeniality,
+    congeniality_correction = congeniality_correction,
+    congeniality_p_adjusted = congeniality_p_adjusted,
+    congeniality_reject_any = congeniality_reject_any,
+    retention               = retention,
+    pooled                  = pooled,
+    M                       = M,
+    K                       = K,
+    exact                   = isTRUE(attr(draws, "exact")),
+    alpha                   = alpha
   )
   class(out) <- "ecem_pooling_diagnostics"
   out

@@ -185,9 +185,21 @@ draw-match-pool code above is unchanged either way.)
 A pooled `tau_bar` is only as trustworthy as the assumption that every
 draw is estimating the same underlying quantity. `pooling_diagnostics()`
 bundles the checks for that: a pre-matching flatness test on each
-elicited covariate, a congeniality test (a single fixed-specification fit
--- no resampling, so this is cheap regardless of sample size), and a
-retention-interaction diagnostic.
+elicited covariate, a congeniality test (each individual run is a single
+fixed-specification fit -- no resampling, so this is cheap regardless of
+sample size), and a retention-interaction diagnostic.
+
+The congeniality test is actually run three times by default, at
+representative `"low"`, `"mid"`, and `"high"` specifications within each
+elicited covariate's range (`congeniality_position` restricts this to a
+subset, even a single position) -- a test that stays quiet at one fixed
+specification can simply be sitting where drift is weak, so congeniality
+is treated as having failed if *any* tested position rejects. Naively
+combining three tests that way inflates the false-rejection rate under
+the true null (simulation-checked at roughly twice nominal `alpha`), so
+`pooling_diagnostics()` applies a Bonferroni correction across however
+many positions were tested by default (`congeniality_correction`; `"holm"`
+and `"none"` are also available).
 
 ```{r}
 set.seed(3)

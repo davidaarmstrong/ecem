@@ -306,11 +306,28 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
     positions_tested <- names(cg)
     all_positions_tested <- setequal(positions_tested, c("low", "mid", "high"))
     cg_p <- vapply(cg, function(r) r$p_value, numeric(1))
-    cg_reject_by_pos <- cg_p < x$alpha
-    cg_reject <- isTRUE(any(cg_reject_by_pos, na.rm = TRUE))
     cg_all_na <- all(is.na(cg_p))
 
-    cat("Congeniality test (fixed specification, matched sample):\n")
+    ## Verdicts (both per-position and overall) are driven by the
+    ## *adjusted* p-values pooling_diagnostics() already computed, not a
+    ## raw comparison to x$alpha here -- the raw union of >1 position's
+    ## p-values runs at roughly twice its nominal size (see
+    ## pooling_diagnostics()'s Details), which is exactly what
+    ## congeniality_correction exists to fix. With a single position
+    ## tested, the adjusted and raw p-values are identical (p.adjust() on
+    ## one value is a no-op regardless of method), so this collapses to
+    ## the original behavior in that case.
+    cg_p_adj <- x$congeniality_p_adjusted
+    cg_reject_by_pos <- cg_p_adj < x$alpha
+    cg_reject <- isTRUE(any(cg_reject_by_pos, na.rm = TRUE))
+    correction <- if (!is.null(x$congeniality_correction)) x$congeniality_correction else "bonferroni"
+    correction_note <- if (length(positions_tested) > 1 && !identical(correction, "none")) {
+      sprintf("; %s-adjusted", correction)
+    } else {
+      ""
+    }
+
+    cat(sprintf("Congeniality test (fixed specification, matched sample%s):\n", correction_note))
     for (pos in positions_tested) {
       r <- cg[[pos]]
       ## vcov_type/min_n_per_arm weren't tracked on congeniality_test()'s
@@ -326,8 +343,13 @@ print.ecem_pooling_diagnostics <- function(x, digits = 4, ...) {
       if (is.na(r$p_value)) {
         cat(sprintf("    p = NA   n = %d   [matched sample too small/degenerate to test]\n", r$n))
       } else {
-        cat(sprintf("    p = %s   n = %d   n_bins = %d   [%s]\n",
-                    g(r$p_value), r$n, r$n_bins,
+        adj_suffix <- if (length(positions_tested) > 1 && !identical(correction, "none")) {
+          sprintf(" (%s-adjusted: p = %s)", correction, g(cg_p_adj[[pos]]))
+        } else {
+          ""
+        }
+        cat(sprintf("    p = %s%s   n = %d   n_bins = %d   [%s]\n",
+                    g(r$p_value), adj_suffix, r$n, r$n_bins,
                     if (isTRUE(cg_reject_by_pos[[pos]])) "FSATT DRIFTS across the elicited range" else "no drift detected"))
       }
     }

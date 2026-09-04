@@ -12,9 +12,10 @@ pooling_diagnostics(
   cutpoint_specs = NULL,
   pooled = NULL,
   run_congeniality = TRUE,
-  congeniality_position = "mid",
+  congeniality_position = c("low", "mid", "high"),
   congeniality_vcov_type = "HC4",
   congeniality_min_n_per_arm = 1,
+  congeniality_correction = c("bonferroni", "holm", "none"),
   run_retention = TRUE,
   alpha = 0.05
 )
@@ -42,8 +43,13 @@ Computed automatically if not supplied.}
 \item{run_congeniality}{Logical; whether to run \code{\link[=congeniality_test]{congeniality_test()}}.
 Defaults to \code{TRUE}.}
 
-\item{congeniality_position}{\code{"mid"} (default), \code{"low"}, or \code{"high"} --
-passed straight through to \code{\link[=congeniality_test]{congeniality_test()}}'s \code{position}.}
+\item{congeniality_position}{\code{c("low", "mid", "high")} (the default) to
+run \code{\link[=congeniality_test]{congeniality_test()}} at all three positions, each passed straight
+through to its \code{position} argument; supply a subset (even a single
+value, e.g. \code{"mid"}) to restrict which positions are tested. Testing
+all three is the point of the default -- drift that's weak at one
+fixed specification can be strong at another, so a single position
+silently passing is not by itself evidence of congeniality.}
 
 \item{congeniality_vcov_type}{\code{"HC4"} (default) -- passed straight
 through to \code{\link[=congeniality_test]{congeniality_test()}}'s \code{vcov_type}. Switch to \code{"HC4m"} if
@@ -60,6 +66,21 @@ before it's used for the congeniality test, e.g. to avoid
 \code{sandwich::vcovHC()} instability at singleton/near-singleton cells --
 see \code{\link[=congeniality_test]{congeniality_test()}}'s documentation for why.}
 
+\item{congeniality_correction}{\code{"bonferroni"} (default), \code{"holm"}, or
+\code{"none"} -- the multiple-testing correction applied, via
+\code{\link[stats:p.adjust]{stats::p.adjust()}}, to each tested position's p-value before the
+"reject if any position rejects" combination rule is evaluated (see
+Details for why this matters: the uncorrected rule runs at roughly
+twice its nominal size). \code{"bonferroni"} divides \code{alpha} by the number
+of positions actually tested (so a single-position call is
+unaffected -- there's nothing to correct for). \code{"holm"} is uniformly
+at least as powerful (step-down rather than a flat threshold) while
+still controlling the family-wise rate, at the cost of a slightly
+less transparent per-position threshold. \code{"none"} restores the raw,
+uncorrected rule (not recommended when testing more than one
+position, but available for comparison). Ignored when only one
+position is tested, or when congeniality isn't run at all.}
+
 \item{run_retention}{Logical; whether to compute the retention-
 interaction (\code{FSATT_m - ATT}) diagnostic. Defaults to \code{TRUE}; it is
 cheap (no bootstrapping, no rematching) and is exactly what the
@@ -75,7 +96,17 @@ An object of class \code{"ecem_pooling_diagnostics"}, a list with
 elements \code{flatness} (named list of \code{\link[=flatness_test_XE]{flatness_test_XE()}} results, one
 per elicited/regime covariate), \code{congeniality} (\code{NULL} if
 \code{run_congeniality = FALSE} or nothing in \code{cutpoint_specs} is
-elicited, else \code{\link[=congeniality_test]{congeniality_test()}}'s result), \code{retention} (\code{NULL} if
+elicited, else a named list of \code{\link[=congeniality_test]{congeniality_test()}} results, one per
+position actually tested, named by that position -- e.g.
+\code{congeniality$high} -- even when only one position was requested),
+\code{congeniality_correction} (the method actually used, echoing the
+argument), \code{congeniality_p_adjusted} (\code{NULL} alongside \code{congeniality},
+else a named numeric vector, one adjusted p-value per tested
+position, \code{NA} wherever the raw p-value was \code{NA}), \code{congeniality_reject_any}
+(\code{NULL} alongside \code{congeniality}; else \code{NA} if every tested position's
+p-value was \code{NA}, else \code{TRUE}/\code{FALSE} -- whether any position's
+\emph{adjusted} p-value cleared \code{alpha}, i.e. the actual combination-rule
+verdict), \code{retention} (\code{NULL} if
 \code{run_retention = FALSE}, else a list with \code{gap}, \code{mean}, \code{sd}),
 \code{pooled}, \code{M}, \code{K} (from \code{\link[=count_achievable_configs]{count_achievable_configs()}}, used by
 \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} to decide whether recommending
@@ -85,16 +116,33 @@ exact enumeration is actually practical for pooling precision),
 \description{
 Runs the pre-matching flatness test (\code{\link[=flatness_test_XE]{flatness_test_XE()}}, once per
 elicited or \code{\link[=regime]{regime()}} covariate, over that covariate's full union
-range), the congeniality test (\code{\link[=congeniality_test]{congeniality_test()}}, at a single fixed
-representative specification -- see its documentation for why this
-replaced the earlier resampling-based excess-variance design), and, by
-default, the retention-interaction diagnostic (\code{\link[=cov_retention_per_draw]{cov_retention_per_draw()}})
--- the three checks Section 6.3 of the paper uses to decide whether
-pooling via Rubin's rules is trustworthy, and what to report if it is
-not. \code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} reports the results together
-with that decision logic spelled out.
+range), the congeniality test (\code{\link[=congeniality_test]{congeniality_test()}} -- see its
+documentation for why this replaced the earlier resampling-based
+excess-variance design), and, by default, the retention-interaction
+diagnostic (\code{\link[=cov_retention_per_draw]{cov_retention_per_draw()}}) -- the three checks Section 6.3
+of the paper uses to decide whether pooling via Rubin's rules is
+trustworthy, and what to report if it is not.
+\code{\link[=print.ecem_pooling_diagnostics]{print.ecem_pooling_diagnostics()}} reports the results together with
+that decision logic spelled out.
 }
 \details{
+The congeniality test is run at \code{"low"}, \code{"mid"}, and \code{"high"} by
+default (see \code{congeniality_position}), not just one fixed
+specification: a test that stays quiet at a single position can simply
+be sitting where drift is weak. Congeniality is treated as having
+failed if \emph{any} tested position rejects -- catching drift anywhere in
+the elicited range is the whole point of testing more than one
+position -- but testing three positions and rejecting if any one clears
+\code{alpha} inflates the false-rejection rate under the true null relative
+to \code{alpha}, since it's an uncorrected union of (correlated, but not
+redundant) tests. Simulation checked this directly: at the null, the
+raw three-position "any rejects" rule rejected roughly twice as often
+as its nominal rate; a Bonferroni correction across however many
+positions were actually tested brought the empirical rate back within
+Monte Carlo noise of nominal. \code{congeniality_correction} (default
+\code{"bonferroni"}) applies that correction to the combination rule; see
+its own documentation for the alternatives.
+
 \code{treat_var}, \code{outcome_var}, and \code{cutpoint_specs} are recovered from
 \code{draws} itself by default -- \code{\link[=run_M_draws]{run_M_draws()}} stores them as attributes
 for exactly this purpose -- so the common case is just
